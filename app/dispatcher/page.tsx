@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Alarm = {
@@ -21,7 +21,11 @@ type Alarm = {
 
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
-  const [statusMessage, setStatusMessage] = useState("");
+  const [statusMessage, setStatusMessage] = useState("Starting...");
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   async function loadAlarms() {
     const { data, error } = await supabase
@@ -37,6 +41,21 @@ export default function DispatcherPage() {
     setAlarms(data || []);
   }
 
+  function enableSound() {
+    if (audioRef.current) {
+      audioRef.current
+        .play()
+        .then(() => {
+          audioRef.current?.pause();
+          audioRef.current.currentTime = 0;
+          setSoundEnabled(true);
+        })
+        .catch(() => {
+          alert("Click again to enable sound");
+        });
+    }
+  }
+
   async function acknowledgeAlarm(id: string) {
     const { data: userData } = await supabase.auth.getUser();
 
@@ -46,39 +65,27 @@ export default function DispatcherPage() {
       .eq("id", userData.user?.id)
       .maybeSingle();
 
-    const dispatcherName =
+    const name =
       profile?.full_name || userData.user?.email || "Dispatcher";
 
-    const { error } = await supabase
+    await supabase
       .from("alarms")
       .update({
         acknowledged: true,
-        acknowledged_by: dispatcherName,
+        acknowledged_by: name,
         acknowledged_at: new Date().toISOString(),
         status: "Acknowledged",
       })
       .eq("id", id);
 
-    if (error) {
-      setStatusMessage(`Acknowledge error: ${error.message}`);
-      return;
-    }
-
-    setStatusMessage(`Alarm acknowledged by ${dispatcherName}`);
+    setStatusMessage(`Acknowledged by ${name}`);
   }
 
   async function clearAlarm(id: string) {
-    const { error } = await supabase
+    await supabase
       .from("alarms")
-      .update({
-        status: "Cleared",
-      })
+      .update({ status: "Cleared" })
       .eq("id", id);
-
-    if (error) {
-      setStatusMessage(`Clear error: ${error.message}`);
-      return;
-    }
 
     setStatusMessage("Alarm cleared");
   }
@@ -91,9 +98,7 @@ export default function DispatcherPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
-        () => {
-          loadAlarms();
-        }
+        () => loadAlarms()
       )
       .subscribe();
 
@@ -101,6 +106,24 @@ export default function DispatcherPage() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // 🔊 PLAY SOUND ON NEW CRITICAL ALARM
+  useEffect(() => {
+    if (!alarms.length) return;
+
+    const newest = alarms[0];
+
+    if (
+      soundEnabled &&
+      newest.id !== lastAlarmId &&
+      newest.status === "Active" &&
+      (newest.priority === "Critical" || newest.alarm_type === "Panic")
+    ) {
+      audioRef.current?.play().catch(() => {});
+    }
+
+    setLastAlarmId(newest.id);
+  }, [alarms, soundEnabled]);
 
   const activeCritical = useMemo(() => {
     return alarms.find(
@@ -110,186 +133,102 @@ export default function DispatcherPage() {
     );
   }, [alarms]);
 
-  const activeAlarms = alarms.filter((a) => a.status !== "Cleared");
-
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      <div className="mx-auto max-w-7xl p-6">
-        <div className="mb-6 flex items-center justify-between rounded-3xl border border-slate-800 bg-slate-900 px-6 py-4">
-          <div>
-            <h1 className="text-3xl font-bold">DCS Alert Dispatcher</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Live emergency control screen
-            </p>
-          </div>
+    <main className="min-h-screen bg-black text-white p-6">
+      <div className="mx-auto max-w-6xl">
 
-          <div className="text-right">
-            <div className="text-sm text-slate-400">System status</div>
-            <div className="font-semibold text-emerald-400">Online</div>
-          </div>
+        {/* HEADER */}
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
+
+          <button
+            onClick={enableSound}
+            className={`px-4 py-2 rounded font-semibold ${
+              soundEnabled
+                ? "bg-emerald-500 text-black"
+                : "bg-yellow-400 text-black"
+            }`}
+          >
+            {soundEnabled ? "🔊 Sound Enabled" : "🔊 Enable Sound"}
+          </button>
         </div>
 
-        <div className="mb-6 rounded-2xl bg-slate-900 px-4 py-3 text-sm text-slate-300">
-          {statusMessage || "Waiting for alarms"}
+        {/* STATUS */}
+        <div className="mb-6 bg-slate-800 p-3 rounded text-sm">
+          {statusMessage}
         </div>
 
-        {activeCritical ? (
-          <section className="mb-8 rounded-[2rem] border-4 border-red-300 bg-red-700 p-8 shadow-2xl">
-            <div className="text-center">
-              <div className="text-6xl font-black tracking-wide">
-                🚨 EMERGENCY 🚨
-              </div>
-              <div className="mt-4 text-3xl font-bold">
-                {activeCritical.alarm_type.toUpperCase()}
-              </div>
-              <div className="mt-3 text-xl">
-                Triggered by{" "}
-                <span className="font-bold">
-                  {activeCritical.triggered_by_name || "Unknown user"}
-                </span>
-              </div>
-              <div className="mt-2 text-lg">
-                Role: {activeCritical.triggered_by_role || "Unknown"}
-              </div>
-              <div className="mt-2 text-lg">
-                Location: {activeCritical.location || "Unknown"}
-              </div>
-              <div className="mt-2 text-lg">
-                Site: {activeCritical.site_name}
-              </div>
-              <div className="mt-2 text-lg">
-                Time: {new Date(activeCritical.created_at).toLocaleString()}
-              </div>
-              <div className="mt-2 text-lg">
-                Message: {activeCritical.message || "-"}
-              </div>
+        {/* 🚨 EMERGENCY PANEL */}
+        {activeCritical && (
+          <div className="bg-red-700 p-10 rounded-3xl text-center mb-8">
+            <h1 className="text-5xl font-bold">🚨 EMERGENCY 🚨</h1>
 
-              <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
-                <button
-                  onClick={() => acknowledgeAlarm(activeCritical.id)}
-                  className="rounded-2xl bg-white px-8 py-4 text-lg font-bold text-black hover:bg-slate-100"
-                >
-                  Acknowledge
-                </button>
-
-                <button
-                  onClick={() => clearAlarm(activeCritical.id)}
-                  className="rounded-2xl bg-slate-950 px-8 py-4 text-lg font-bold text-white hover:bg-black"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          </section>
-        ) : (
-          <section className="mb-8 rounded-[2rem] border border-slate-800 bg-slate-900 p-10 text-center">
-            <div className="text-4xl font-bold text-emerald-400">
-              No active emergency
-            </div>
-            <p className="mt-3 text-slate-400">
-              Dispatcher screen is live and monitoring alarms
+            <p className="mt-4 text-2xl">
+              {activeCritical.alarm_type}
             </p>
-          </section>
+
+            <p className="mt-2">
+              By: {activeCritical.triggered_by_name}
+            </p>
+
+            <p>Role: {activeCritical.triggered_by_role}</p>
+            <p>Location: {activeCritical.location}</p>
+            <p>Site: {activeCritical.site_name}</p>
+
+            <p className="mt-2">
+              {new Date(activeCritical.created_at).toLocaleString()}
+            </p>
+
+            <div className="mt-6 flex justify-center gap-4">
+              <button
+                onClick={() => acknowledgeAlarm(activeCritical.id)}
+                className="bg-white text-black px-6 py-3 rounded font-bold"
+              >
+                Acknowledge
+              </button>
+
+              <button
+                onClick={() => clearAlarm(activeCritical.id)}
+                className="bg-black text-white px-6 py-3 rounded font-bold"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
         )}
 
-        <section className="rounded-[2rem] border border-slate-800 bg-slate-900 p-6">
-          <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-2xl font-semibold">Alarm queue</h2>
-            <div className="text-sm text-slate-400">
-              {activeAlarms.length} active / acknowledged
+        {/* LIST */}
+        <div>
+          <h2 className="text-xl mb-4">All Alarms</h2>
+
+          {alarms.map((alarm) => (
+            <div
+              key={alarm.id}
+              className="mb-3 border border-gray-700 p-4 rounded"
+            >
+              <p className="font-bold">
+                {alarm.alarm_type} - {alarm.location}
+              </p>
+
+              <p>
+                {alarm.triggered_by_name} ({alarm.triggered_by_role})
+              </p>
+
+              <p>Status: {alarm.status}</p>
+
+              <p className="text-sm">
+                {new Date(alarm.created_at).toLocaleString()}
+              </p>
             </div>
-          </div>
+          ))}
+        </div>
 
-          <div className="space-y-4">
-            {alarms.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-slate-400">
-                No alarms yet
-              </div>
-            )}
-
-            {alarms.map((alarm) => (
-              <div
-                key={alarm.id}
-                className={`rounded-2xl border p-5 ${
-                  alarm.status === "Active" && alarm.priority === "Critical"
-                    ? "border-red-500 bg-red-950/40"
-                    : alarm.status === "Acknowledged"
-                    ? "border-amber-500 bg-amber-950/20"
-                    : alarm.status === "Cleared"
-                    ? "border-slate-700 bg-slate-950/40 opacity-70"
-                    : "border-slate-700 bg-slate-950/30"
-                }`}
-              >
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <div className="text-xl font-semibold">
-                      {alarm.alarm_type} · {alarm.location || "Unknown location"}
-                    </div>
-                    <div className="mt-2 text-sm text-slate-300">
-                      Triggered by:{" "}
-                      <span className="font-semibold">
-                        {alarm.triggered_by_name || "Unknown"}
-                      </span>{" "}
-                      ({alarm.triggered_by_role || "Unknown"})
-                    </div>
-                    <div className="mt-1 text-sm text-slate-400">
-                      Site: {alarm.site_name}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-400">
-                      Message: {alarm.message || "-"}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-400">
-                      Created: {new Date(alarm.created_at).toLocaleString()}
-                    </div>
-
-                    {alarm.acknowledged && (
-                      <div className="mt-2 text-sm text-emerald-400">
-                        Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
-                        {alarm.acknowledged_at
-                          ? new Date(alarm.acknowledged_at).toLocaleString()
-                          : "-"}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex min-w-[220px] flex-col items-start gap-3 lg:items-end">
-                    <div
-                      className={`rounded-full px-3 py-1 text-sm font-semibold ${
-                        alarm.status === "Active"
-                          ? "bg-red-200 text-red-900"
-                          : alarm.status === "Acknowledged"
-                          ? "bg-amber-200 text-amber-900"
-                          : "bg-slate-200 text-slate-900"
-                      }`}
-                    >
-                      {alarm.status}
-                    </div>
-
-                    <div className="flex gap-2">
-                      {alarm.status === "Active" && (
-                        <button
-                          onClick={() => acknowledgeAlarm(alarm.id)}
-                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-slate-100"
-                        >
-                          Acknowledge
-                        </button>
-                      )}
-
-                      {alarm.status !== "Cleared" && (
-                        <button
-                          onClick={() => clearAlarm(alarm.id)}
-                          className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* AUDIO */}
+        <audio
+          ref={audioRef}
+          src="https://actions.google.com/sounds/v1/emergency/emergency_siren.ogg"
+          preload="auto"
+        />
       </div>
     </main>
   );

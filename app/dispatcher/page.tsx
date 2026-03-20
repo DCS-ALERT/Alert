@@ -19,6 +19,53 @@ type Alarm = {
   acknowledged_at: string | null;
 };
 
+function getAlarmTheme(alarmType: string) {
+  const type = alarmType.toLowerCase();
+
+  if (type === "panic") {
+    return {
+      panel: "bg-red-700",
+      badge: "bg-red-200 text-red-900",
+      button: "bg-red-700 text-white",
+      title: "🚨 PANIC ALERT 🚨",
+    };
+  }
+
+  if (type === "lockdown") {
+    return {
+      panel: "bg-purple-700",
+      badge: "bg-purple-200 text-purple-900",
+      button: "bg-purple-700 text-white",
+      title: "🔒 LOCKDOWN ALERT 🔒",
+    };
+  }
+
+  if (type === "medical") {
+    return {
+      panel: "bg-blue-700",
+      badge: "bg-blue-200 text-blue-900",
+      button: "bg-blue-700 text-white",
+      title: "🏥 MEDICAL ALERT 🏥",
+    };
+  }
+
+  if (type === "fire") {
+    return {
+      panel: "bg-orange-600",
+      badge: "bg-orange-200 text-orange-900",
+      button: "bg-orange-600 text-white",
+      title: "🔥 FIRE ALERT 🔥",
+    };
+  }
+
+  return {
+    panel: "bg-slate-700",
+    badge: "bg-slate-200 text-slate-900",
+    button: "bg-slate-700 text-white",
+    title: "⚠️ ALERT ⚠️",
+  };
+}
+
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [statusMessage, setStatusMessage] = useState("Starting...");
@@ -47,8 +94,11 @@ export default function DispatcherPage() {
         .play()
         .then(() => {
           audioRef.current?.pause();
-          audioRef.current.currentTime = 0;
+          if (audioRef.current) {
+            audioRef.current.currentTime = 0;
+          }
           setSoundEnabled(true);
+          setStatusMessage("Dispatcher sound enabled");
         })
         .catch(() => {
           alert("Click again to enable sound");
@@ -65,10 +115,9 @@ export default function DispatcherPage() {
       .eq("id", userData.user?.id)
       .maybeSingle();
 
-    const name =
-      profile?.full_name || userData.user?.email || "Dispatcher";
+    const name = profile?.full_name || userData.user?.email || "Dispatcher";
 
-    await supabase
+    const { error } = await supabase
       .from("alarms")
       .update({
         acknowledged: true,
@@ -78,14 +127,24 @@ export default function DispatcherPage() {
       })
       .eq("id", id);
 
+    if (error) {
+      setStatusMessage(`Acknowledge error: ${error.message}`);
+      return;
+    }
+
     setStatusMessage(`Acknowledged by ${name}`);
   }
 
   async function clearAlarm(id: string) {
-    await supabase
+    const { error } = await supabase
       .from("alarms")
       .update({ status: "Cleared" })
       .eq("id", id);
+
+    if (error) {
+      setStatusMessage(`Clear error: ${error.message}`);
+      return;
+    }
 
     setStatusMessage("Alarm cleared");
   }
@@ -107,7 +166,6 @@ export default function DispatcherPage() {
     };
   }, []);
 
-  // 🔊 PLAY SOUND ON NEW CRITICAL ALARM
   useEffect(() => {
     if (!alarms.length) return;
 
@@ -116,34 +174,31 @@ export default function DispatcherPage() {
     if (
       soundEnabled &&
       newest.id !== lastAlarmId &&
-      newest.status === "Active" &&
-      (newest.priority === "Critical" || newest.alarm_type === "Panic")
+      newest.status === "Active"
     ) {
       audioRef.current?.play().catch(() => {});
     }
 
     setLastAlarmId(newest.id);
-  }, [alarms, soundEnabled]);
+  }, [alarms, soundEnabled, lastAlarmId]);
 
-  const activeCritical = useMemo(() => {
-    return alarms.find(
-      (a) =>
-        a.status === "Active" &&
-        (a.priority === "Critical" || a.alarm_type === "Panic")
-    );
+  const activeAlarm = useMemo(() => {
+    return alarms.find((a) => a.status === "Active");
   }, [alarms]);
 
-  return (
-    <main className="min-h-screen bg-black text-white p-6">
-      <div className="mx-auto max-w-6xl">
+  const activeTheme = activeAlarm
+    ? getAlarmTheme(activeAlarm.alarm_type)
+    : null;
 
-        {/* HEADER */}
-        <div className="flex justify-between items-center mb-6">
+  return (
+    <main className="min-h-screen bg-black p-6 text-white">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-6 flex items-center justify-between">
           <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
 
           <button
             onClick={enableSound}
-            className={`px-4 py-2 rounded font-semibold ${
+            className={`rounded px-4 py-2 font-semibold ${
               soundEnabled
                 ? "bg-emerald-500 text-black"
                 : "bg-yellow-400 text-black"
@@ -153,77 +208,117 @@ export default function DispatcherPage() {
           </button>
         </div>
 
-        {/* STATUS */}
-        <div className="mb-6 bg-slate-800 p-3 rounded text-sm">
+        <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
           {statusMessage}
         </div>
 
-        {/* 🚨 EMERGENCY PANEL */}
-        {activeCritical && (
-          <div className="bg-red-700 p-10 rounded-3xl text-center mb-8">
-            <h1 className="text-5xl font-bold">🚨 EMERGENCY 🚨</h1>
+        {activeAlarm && activeTheme ? (
+          <div className={`${activeTheme.panel} mb-8 rounded-3xl p-10 text-center`}>
+            <h1 className="text-5xl font-bold">{activeTheme.title}</h1>
 
-            <p className="mt-4 text-2xl">
-              {activeCritical.alarm_type}
-            </p>
+            <p className="mt-4 text-2xl">{activeAlarm.alarm_type}</p>
 
-            <p className="mt-2">
-              By: {activeCritical.triggered_by_name}
-            </p>
-
-            <p>Role: {activeCritical.triggered_by_role}</p>
-            <p>Location: {activeCritical.location}</p>
-            <p>Site: {activeCritical.site_name}</p>
+            <p className="mt-2">By: {activeAlarm.triggered_by_name || "Unknown"}</p>
+            <p>Role: {activeAlarm.triggered_by_role || "Unknown"}</p>
+            <p>Location: {activeAlarm.location || "Unknown"}</p>
+            <p>Site: {activeAlarm.site_name}</p>
 
             <p className="mt-2">
-              {new Date(activeCritical.created_at).toLocaleString()}
+              {new Date(activeAlarm.created_at).toLocaleString()}
             </p>
 
             <div className="mt-6 flex justify-center gap-4">
               <button
-                onClick={() => acknowledgeAlarm(activeCritical.id)}
-                className="bg-white text-black px-6 py-3 rounded font-bold"
+                onClick={() => acknowledgeAlarm(activeAlarm.id)}
+                className="rounded bg-white px-6 py-3 font-bold text-black"
               >
                 Acknowledge
               </button>
 
               <button
-                onClick={() => clearAlarm(activeCritical.id)}
-                className="bg-black text-white px-6 py-3 rounded font-bold"
+                onClick={() => clearAlarm(activeAlarm.id)}
+                className="rounded bg-black px-6 py-3 font-bold text-white"
               >
                 Clear
               </button>
             </div>
           </div>
+        ) : (
+          <div className="mb-8 rounded-3xl bg-slate-900 p-10 text-center">
+            <h1 className="text-4xl font-bold text-emerald-400">
+              No Active Alerts
+            </h1>
+          </div>
         )}
 
-        {/* LIST */}
         <div>
-          <h2 className="text-xl mb-4">All Alarms</h2>
+          <h2 className="mb-4 text-xl">All Alarms</h2>
 
-          {alarms.map((alarm) => (
-            <div
-              key={alarm.id}
-              className="mb-3 border border-gray-700 p-4 rounded"
-            >
-              <p className="font-bold">
-                {alarm.alarm_type} - {alarm.location}
-              </p>
+          {alarms.map((alarm) => {
+            const theme = getAlarmTheme(alarm.alarm_type);
 
-              <p>
-                {alarm.triggered_by_name} ({alarm.triggered_by_role})
-              </p>
+            return (
+              <div
+                key={alarm.id}
+                className="mb-3 rounded border border-gray-700 p-4"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-bold">
+                      {alarm.alarm_type} - {alarm.location || "Unknown location"}
+                    </p>
 
-              <p>Status: {alarm.status}</p>
+                    <p>
+                      {alarm.triggered_by_name || "Unknown"} (
+                      {alarm.triggered_by_role || "Unknown"})
+                    </p>
 
-              <p className="text-sm">
-                {new Date(alarm.created_at).toLocaleString()}
-              </p>
-            </div>
-          ))}
+                    <p>Site: {alarm.site_name}</p>
+                    <p>Status: {alarm.status}</p>
+
+                    {alarm.acknowledged && (
+                      <p className="text-sm text-emerald-400">
+                        Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
+                        {alarm.acknowledged_at
+                          ? new Date(alarm.acknowledged_at).toLocaleString()
+                          : "-"}
+                      </p>
+                    )}
+
+                    <p className="text-sm">
+                      {new Date(alarm.created_at).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-2">
+                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}>
+                      {alarm.alarm_type}
+                    </span>
+
+                    {alarm.status === "Active" && (
+                      <button
+                        onClick={() => acknowledgeAlarm(alarm.id)}
+                        className="rounded bg-white px-3 py-2 text-sm font-semibold text-black"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+
+                    {alarm.status !== "Cleared" && (
+                      <button
+                        onClick={() => clearAlarm(alarm.id)}
+                        className="rounded bg-slate-800 px-3 py-2 text-sm font-semibold text-white"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* AUDIO */}
         <audio
           ref={audioRef}
           src="https://actions.google.com/sounds/v1/emergency/emergency_siren.ogg"

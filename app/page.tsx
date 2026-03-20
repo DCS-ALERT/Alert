@@ -18,6 +18,9 @@ type Alarm = {
   acknowledged: boolean | null;
   acknowledged_by: string | null;
   acknowledged_at: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  location_accuracy: number | null;
 };
 
 type Profile = {
@@ -111,6 +114,36 @@ export default function HomePage() {
     setStatusMessage("Profile saved");
   }
 
+  async function getLocation(): Promise<{
+    latitude: number | null;
+    longitude: number | null;
+    accuracy: number | null;
+  }> {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve({ latitude: null, longitude: null, accuracy: null });
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          resolve({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          });
+        },
+        () => {
+          resolve({ latitude: null, longitude: null, accuracy: null });
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+        }
+      );
+    });
+  }
+
   async function sendAlarm(type: string) {
     const { data: userData } = await supabase.auth.getUser();
 
@@ -131,6 +164,10 @@ export default function HomePage() {
       return;
     }
 
+    setStatusMessage("Getting location...");
+
+    const locationData = await getLocation();
+
     setStatusMessage(`Sending ${type} alarm...`);
 
     const { error } = await supabase.from("alarms").insert([
@@ -138,12 +175,15 @@ export default function HomePage() {
         site_name: currentProfile.site_name || "Test Site",
         alarm_type: type,
         location: "Reception",
-        priority: type === "Lockdown" || type === "Panic" ? "Critical" : "High",
+        priority: type === "Panic" || type === "Lockdown" ? "Critical" : "High",
         status: "Active",
         message: `${type} alert triggered`,
         triggered_by_user_id: userData.user.id,
         triggered_by_name: currentProfile.full_name,
         triggered_by_role: currentProfile.role,
+        latitude: locationData.latitude,
+        longitude: locationData.longitude,
+        location_accuracy: locationData.accuracy,
       },
     ]);
 
@@ -152,7 +192,7 @@ export default function HomePage() {
       return;
     }
 
-    setStatusMessage(`${type} alarm created`);
+    setStatusMessage(`${type} alarm sent`);
   }
 
   async function clearAlarm(id: string) {
@@ -315,6 +355,13 @@ export default function HomePage() {
                 <p className="text-sm text-slate-600">
                   Triggered by: {alarm.triggered_by_name || "Unknown"} ({alarm.triggered_by_role || "Unknown"})
                 </p>
+
+                {alarm.latitude && alarm.longitude && (
+                  <p className="text-sm text-slate-400">
+                    GPS: {alarm.latitude.toFixed(5)}, {alarm.longitude.toFixed(5)}
+                  </p>
+                )}
+
                 <p className="text-xs text-slate-400">
                   {new Date(alarm.created_at).toLocaleString()}
                 </p>

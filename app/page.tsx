@@ -32,27 +32,26 @@ export default function HomePage() {
     setAlarms(data || []);
   }
 
-  async function sendPanic() {
-    setStatusMessage("Sending panic alarm...");
+  async function sendAlarm(type: string) {
+    setStatusMessage(`Sending ${type} alarm...`);
 
-    const { data, error } = await supabase.from("alarms").insert([
+    const { error } = await supabase.from("alarms").insert([
       {
         site_name: "Test Site",
-        alarm_type: "Panic",
+        alarm_type: type,
         location: "Reception",
-        priority: "Critical",
+        priority: type === "Lockdown" ? "Critical" : "High",
         status: "Active",
-        message: "Immediate assistance required",
+        message: `${type} alert triggered`,
       },
-    ]).select();
+    ]);
 
     if (error) {
       setStatusMessage(`Insert error: ${error.message}`);
       return;
     }
 
-    setStatusMessage(`Alarm created successfully (${data?.[0]?.id || "ok"})`);
-    await loadAlarms();
+    setStatusMessage(`${type} alarm created`);
   }
 
   async function clearAlarm(id: string) {
@@ -67,34 +66,74 @@ export default function HomePage() {
     }
 
     setStatusMessage("Alarm cleared");
-    await loadAlarms();
   }
 
   useEffect(() => {
     loadAlarms();
+
+    const channel = supabase
+      .channel("alarms-channel")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "alarms" },
+        () => {
+          loadAlarms();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return (
     <main className="min-h-screen bg-slate-50 p-10">
       <div className="mx-auto max-w-5xl space-y-6">
+        {/* Header */}
         <div className="rounded-3xl bg-white p-6 shadow">
           <h1 className="text-2xl font-bold">DCS Alert Dashboard</h1>
           <p className="text-sm text-slate-600">
-            Panic system test (Supabase connected)
+            Live alarm system (Realtime enabled)
           </p>
 
           <div className="mt-4 rounded-xl bg-slate-100 p-3 text-sm text-slate-700">
-            {statusMessage || "Ready"}
+            {statusMessage || "System ready"}
           </div>
         </div>
 
-        <button
-          onClick={sendPanic}
-          className="w-full rounded-3xl bg-red-600 p-6 text-lg font-semibold text-white hover:bg-red-700"
-        >
-          🚨 SOS PANIC BUTTON
-        </button>
+        {/* Alarm Buttons */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <button
+            onClick={() => sendAlarm("Panic")}
+            className="rounded-3xl bg-red-600 p-6 text-lg font-semibold text-white hover:bg-red-700"
+          >
+            🚨 Panic
+          </button>
 
+          <button
+            onClick={() => sendAlarm("Lockdown")}
+            className="rounded-3xl bg-purple-600 p-6 text-lg font-semibold text-white hover:bg-purple-700"
+          >
+            🔒 Lockdown
+          </button>
+
+          <button
+            onClick={() => sendAlarm("Medical")}
+            className="rounded-3xl bg-blue-600 p-6 text-lg font-semibold text-white hover:bg-blue-700"
+          >
+            🏥 Medical
+          </button>
+
+          <button
+            onClick={() => sendAlarm("Fire")}
+            className="rounded-3xl bg-orange-600 p-6 text-lg font-semibold text-white hover:bg-orange-700"
+          >
+            🔥 Fire
+          </button>
+        </div>
+
+        {/* Active Alarms */}
         <div className="rounded-3xl bg-white p-6 shadow">
           <h2 className="mb-4 text-lg font-semibold">Active Alarms</h2>
 
@@ -111,14 +150,17 @@ export default function HomePage() {
                 <p className="font-semibold">
                   {alarm.alarm_type} – {alarm.location}
                 </p>
-                <p className="text-sm text-slate-500">{alarm.message}</p>
+                <p className="text-sm text-slate-500">
+                  {alarm.message}
+                </p>
                 <p className="text-xs text-slate-400">
                   {new Date(alarm.created_at).toLocaleString()}
                 </p>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex items-center gap-3">
                 <span className="text-xs">{alarm.status}</span>
+
                 {alarm.status !== "Cleared" && (
                   <button
                     onClick={() => clearAlarm(alarm.id)}

@@ -17,6 +17,9 @@ type Alarm = {
   acknowledged: boolean | null;
   acknowledged_by: string | null;
   acknowledged_at: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  location_accuracy: number | null;
 };
 
 function getAlarmTheme(alarmType: string) {
@@ -26,7 +29,6 @@ function getAlarmTheme(alarmType: string) {
     return {
       panel: "bg-red-700",
       badge: "bg-red-200 text-red-900",
-      button: "bg-red-700 text-white",
       title: "🚨 PANIC ALERT 🚨",
     };
   }
@@ -35,7 +37,6 @@ function getAlarmTheme(alarmType: string) {
     return {
       panel: "bg-purple-700",
       badge: "bg-purple-200 text-purple-900",
-      button: "bg-purple-700 text-white",
       title: "🔒 LOCKDOWN ALERT 🔒",
     };
   }
@@ -44,7 +45,6 @@ function getAlarmTheme(alarmType: string) {
     return {
       panel: "bg-blue-700",
       badge: "bg-blue-200 text-blue-900",
-      button: "bg-blue-700 text-white",
       title: "🏥 MEDICAL ALERT 🏥",
     };
   }
@@ -53,7 +53,6 @@ function getAlarmTheme(alarmType: string) {
     return {
       panel: "bg-orange-600",
       badge: "bg-orange-200 text-orange-900",
-      button: "bg-orange-600 text-white",
       title: "🔥 FIRE ALERT 🔥",
     };
   }
@@ -61,7 +60,6 @@ function getAlarmTheme(alarmType: string) {
   return {
     panel: "bg-slate-700",
     badge: "bg-slate-200 text-slate-900",
-    button: "bg-slate-700 text-white",
     title: "⚠️ ALERT ⚠️",
   };
 }
@@ -89,21 +87,24 @@ export default function DispatcherPage() {
   }
 
   function enableSound() {
-    if (audioRef.current) {
-      audioRef.current
-        .play()
-        .then(() => {
-          audioRef.current?.pause();
-          if (audioRef.current) {
-            audioRef.current.currentTime = 0;
-          }
-          setSoundEnabled(true);
-          setStatusMessage("Dispatcher sound enabled");
-        })
-        .catch(() => {
-          alert("Click again to enable sound");
-        });
-    }
+    if (!audioRef.current) return;
+
+    audioRef.current.volume = 1;
+    audioRef.current.currentTime = 0;
+
+    audioRef.current
+      .play()
+      .then(() => {
+        if (!audioRef.current) return;
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        setSoundEnabled(true);
+        setStatusMessage("Dispatcher sound enabled");
+      })
+      .catch((err) => {
+        console.error("Sound enable failed:", err);
+        setStatusMessage("Browser blocked audio. Tap Enable Sound again.");
+      });
   }
 
   async function acknowledgeAlarm(id: string) {
@@ -167,16 +168,18 @@ export default function DispatcherPage() {
   }, []);
 
   useEffect(() => {
-    if (!alarms.length) return;
+    if (!alarms.length || !soundEnabled || !audioRef.current) return;
 
     const newest = alarms[0];
+    const isNewAlarm = newest.id !== lastAlarmId;
+    const isActiveAlarm = newest.status === "Active";
 
-    if (
-      soundEnabled &&
-      newest.id !== lastAlarmId &&
-      newest.status === "Active"
-    ) {
-      audioRef.current?.play().catch(() => {});
+    if (isNewAlarm && isActiveAlarm) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch((err) => {
+        console.error("Alarm play failed:", err);
+        setStatusMessage("Alarm received but sound could not play.");
+      });
     }
 
     setLastAlarmId(newest.id);
@@ -196,16 +199,27 @@ export default function DispatcherPage() {
         <div className="mb-6 flex items-center justify-between">
           <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
 
-          <button
-            onClick={enableSound}
-            className={`rounded px-4 py-2 font-semibold ${
-              soundEnabled
-                ? "bg-emerald-500 text-black"
-                : "bg-yellow-400 text-black"
-            }`}
-          >
-            {soundEnabled ? "🔊 Sound Enabled" : "🔊 Enable Sound"}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={enableSound}
+              className={`rounded px-4 py-2 font-semibold ${
+                soundEnabled
+                  ? "bg-emerald-500 text-black"
+                  : "bg-yellow-400 text-black"
+              }`}
+            >
+              {soundEnabled ? "🔊 Sound Enabled" : "🔊 Enable Sound"}
+            </button>
+
+            <button
+              onClick={() => {
+                audioRef.current?.play().catch((err) => console.error(err));
+              }}
+              className="rounded bg-blue-500 px-4 py-2 font-semibold text-white"
+            >
+              Test Sound
+            </button>
+          </div>
         </div>
 
         <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
@@ -217,7 +231,6 @@ export default function DispatcherPage() {
             <h1 className="text-5xl font-bold">{activeTheme.title}</h1>
 
             <p className="mt-4 text-2xl">{activeAlarm.alarm_type}</p>
-
             <p className="mt-2">By: {activeAlarm.triggered_by_name || "Unknown"}</p>
             <p>Role: {activeAlarm.triggered_by_role || "Unknown"}</p>
             <p>Location: {activeAlarm.location || "Unknown"}</p>
@@ -226,6 +239,28 @@ export default function DispatcherPage() {
             <p className="mt-2">
               {new Date(activeAlarm.created_at).toLocaleString()}
             </p>
+
+            {activeAlarm.latitude && activeAlarm.longitude && (
+              <div className="mt-4">
+                <p>
+                  GPS: {activeAlarm.latitude.toFixed(5)},{" "}
+                  {activeAlarm.longitude.toFixed(5)}
+                </p>
+
+                {activeAlarm.location_accuracy && (
+                  <p>Accuracy: {Math.round(activeAlarm.location_accuracy)}m</p>
+                )}
+
+                <a
+                  href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-block font-semibold underline text-white"
+                >
+                  Open in Google Maps
+                </a>
+              </div>
+            )}
 
             <div className="mt-6 flex justify-center gap-4">
               <button
@@ -276,6 +311,12 @@ export default function DispatcherPage() {
                     <p>Site: {alarm.site_name}</p>
                     <p>Status: {alarm.status}</p>
 
+                    {alarm.latitude && alarm.longitude && (
+                      <p className="text-sm text-slate-400">
+                        GPS: {alarm.latitude.toFixed(5)}, {alarm.longitude.toFixed(5)}
+                      </p>
+                    )}
+
                     {alarm.acknowledged && (
                       <p className="text-sm text-emerald-400">
                         Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
@@ -319,11 +360,7 @@ export default function DispatcherPage() {
           })}
         </div>
 
-        <audio
-          ref={audioRef}
-          src="https://actions.google.com/sounds/v1/emergency/emergency_siren.ogg"
-          preload="auto"
-        />
+        <audio ref={audioRef} src="/alarm.mp3" preload="auto" />
       </div>
     </main>
   );

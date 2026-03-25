@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Alarm = {
@@ -39,6 +39,9 @@ export default function HomePage() {
   const [roleInput, setRoleInput] = useState("User");
   const [siteInput, setSiteInput] = useState("Test Site");
   const [needsProfile, setNeedsProfile] = useState(false);
+  const [trackingEnabled, setTrackingEnabled] = useState(false);
+
+  const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   async function loadAlarms() {
     const { data, error } = await supabase
@@ -165,9 +168,7 @@ export default function HomePage() {
     }
 
     setStatusMessage("Getting location...");
-
     const locationData = await getLocation();
-
     setStatusMessage(`Sending ${type} alarm...`);
 
     const { error } = await supabase.from("alarms").insert([
@@ -195,6 +196,79 @@ export default function HomePage() {
     setStatusMessage(`${type} alarm sent`);
   }
 
+  async function updateLiveLocation() {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) return;
+
+    const { data: currentProfile } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userData.user.id)
+      .maybeSingle();
+
+    const locationData = await getLocation();
+
+    if (locationData.latitude === null || locationData.longitude === null) {
+      setStatusMessage("Unable to get live location");
+      return;
+    }
+
+    const { error } = await supabase.from("user_locations").upsert([
+      {
+        user_id: userData.user.id,
+        full_name: currentProfile?.full_name || userData.user.email,
+        role: currentProfile?.role || "User",
+        site_name: currentProfile?.site_name || "Test Site",
+        latitude: locationData.latitude,
+        longitude: locationData.longitude,
+        accuracy: locationData.accuracy,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+
+    if (error) {
+      setStatusMessage(`Tracking error: ${error.message}`);
+      return;
+    }
+
+    setStatusMessage(
+      `Live tracking updated at ${new Date().toLocaleTimeString()}`
+    );
+  }
+
+  async function startTracking() {
+    if (trackingEnabled) return;
+
+    setStatusMessage("Starting live tracking...");
+    await updateLiveLocation();
+
+    trackingIntervalRef.current = setInterval(() => {
+      updateLiveLocation();
+    }, 30000);
+
+    setTrackingEnabled(true);
+    setStatusMessage("Live tracking enabled");
+  }
+
+  async function stopTracking() {
+    if (trackingIntervalRef.current) {
+      clearInterval(trackingIntervalRef.current);
+      trackingIntervalRef.current = null;
+    }
+
+    const { data: userData } = await supabase.auth.getUser();
+
+    if (userData.user) {
+      await supabase
+        .from("user_locations")
+        .delete()
+        .eq("user_id", userData.user.id);
+    }
+
+    setTrackingEnabled(false);
+    setStatusMessage("Live tracking stopped");
+  }
+
   async function clearAlarm(id: string) {
     const { error } = await supabase
       .from("alarms")
@@ -210,6 +284,7 @@ export default function HomePage() {
   }
 
   async function signOut() {
+    await stopTracking();
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
@@ -235,6 +310,9 @@ export default function HomePage() {
 
     return () => {
       supabase.removeChannel(channel);
+      if (trackingIntervalRef.current) {
+        clearInterval(trackingIntervalRef.current);
+      }
     };
   }, []);
 
@@ -278,7 +356,6 @@ export default function HomePage() {
                 value={fullNameInput}
                 onChange={(e) => setFullNameInput(e.target.value)}
               />
-
               <input
                 type="text"
                 placeholder="Role"
@@ -286,7 +363,6 @@ export default function HomePage() {
                 value={roleInput}
                 onChange={(e) => setRoleInput(e.target.value)}
               />
-
               <input
                 type="text"
                 placeholder="Site name"
@@ -304,6 +380,27 @@ export default function HomePage() {
             </button>
           </div>
         )}
+
+        <div className="rounded-3xl bg-white p-6 shadow">
+          <h2 className="mb-4 text-lg font-semibold">Live Tracking</h2>
+          <div className="flex gap-3">
+            <button
+              onClick={startTracking}
+              className="rounded bg-emerald-600 px-4 py-2 text-white"
+            >
+              Start Tracking
+            </button>
+            <button
+              onClick={stopTracking}
+              className="rounded bg-slate-800 px-4 py-2 text-white"
+            >
+              Stop Tracking
+            </button>
+          </div>
+          <p className="mt-3 text-sm text-slate-500">
+            Sends your live GPS location every 30 seconds while enabled.
+          </p>
+        </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <button
@@ -356,7 +453,7 @@ export default function HomePage() {
                   Triggered by: {alarm.triggered_by_name || "Unknown"} ({alarm.triggered_by_role || "Unknown"})
                 </p>
 
-                {alarm.latitude && alarm.longitude && (
+                {alarm.latitude !== null && alarm.longitude !== null && (
                   <p className="text-sm text-slate-400">
                     GPS: {alarm.latitude.toFixed(5)}, {alarm.longitude.toFixed(5)}
                   </p>

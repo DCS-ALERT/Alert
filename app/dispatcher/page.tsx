@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabase";
+
+const AlarmMap = dynamic(() => import("@/components/AlarmMap"), {
+  ssr: false,
+});
 
 type Alarm = {
   id: string;
@@ -195,7 +200,7 @@ export default function DispatcherPage() {
 
   return (
     <main className="min-h-screen bg-black p-6 text-white">
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-7xl">
         <div className="mb-6 flex items-center justify-between">
           <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
 
@@ -227,55 +232,79 @@ export default function DispatcherPage() {
         </div>
 
         {activeAlarm && activeTheme ? (
-          <div className={`${activeTheme.panel} mb-8 rounded-3xl p-10 text-center`}>
-            <h1 className="text-5xl font-bold">{activeTheme.title}</h1>
+          <div className={`${activeTheme.panel} mb-8 rounded-3xl p-8`}>
+            <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
+              <div className="text-center lg:text-left">
+                <h1 className="text-5xl font-bold">{activeTheme.title}</h1>
 
-            <p className="mt-4 text-2xl">{activeAlarm.alarm_type}</p>
-            <p className="mt-2">By: {activeAlarm.triggered_by_name || "Unknown"}</p>
-            <p>Role: {activeAlarm.triggered_by_role || "Unknown"}</p>
-            <p>Location: {activeAlarm.location || "Unknown"}</p>
-            <p>Site: {activeAlarm.site_name}</p>
-
-            <p className="mt-2">
-              {new Date(activeAlarm.created_at).toLocaleString()}
-            </p>
-
-            {activeAlarm.latitude && activeAlarm.longitude && (
-              <div className="mt-4">
-                <p>
-                  GPS: {activeAlarm.latitude.toFixed(5)},{" "}
-                  {activeAlarm.longitude.toFixed(5)}
+                <p className="mt-4 text-2xl">{activeAlarm.alarm_type}</p>
+                <p className="mt-2">
+                  By: {activeAlarm.triggered_by_name || "Unknown"}
+                </p>
+                <p>Role: {activeAlarm.triggered_by_role || "Unknown"}</p>
+                <p>Location: {activeAlarm.location || "Unknown"}</p>
+                <p>Site: {activeAlarm.site_name}</p>
+                <p className="mt-2">
+                  {new Date(activeAlarm.created_at).toLocaleString()}
                 </p>
 
-                {activeAlarm.location_accuracy && (
-                  <p>Accuracy: {Math.round(activeAlarm.location_accuracy)}m</p>
+                {activeAlarm.latitude && activeAlarm.longitude && (
+                  <div className="mt-4">
+                    <p>
+                      GPS: {activeAlarm.latitude.toFixed(5)},{" "}
+                      {activeAlarm.longitude.toFixed(5)}
+                    </p>
+
+                    {activeAlarm.location_accuracy && (
+                      <p>
+                        Accuracy: {Math.round(activeAlarm.location_accuracy)}m
+                      </p>
+                    )}
+
+                    <a
+                      href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-block font-semibold underline text-white"
+                    >
+                      Open in Google Maps
+                    </a>
+                  </div>
                 )}
 
-                <a
-                  href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-2 inline-block font-semibold underline text-white"
-                >
-                  Open in Google Maps
-                </a>
+                <div className="mt-6 flex flex-wrap justify-center gap-4 lg:justify-start">
+                  <button
+                    onClick={() => acknowledgeAlarm(activeAlarm.id)}
+                    className="rounded bg-white px-6 py-3 font-bold text-black"
+                  >
+                    Acknowledge
+                  </button>
+
+                  <button
+                    onClick={() => clearAlarm(activeAlarm.id)}
+                    className="rounded bg-black px-6 py-3 font-bold text-white"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
-            )}
 
-            <div className="mt-6 flex justify-center gap-4">
-              <button
-                onClick={() => acknowledgeAlarm(activeAlarm.id)}
-                className="rounded bg-white px-6 py-3 font-bold text-black"
-              >
-                Acknowledge
-              </button>
-
-              <button
-                onClick={() => clearAlarm(activeAlarm.id)}
-                className="rounded bg-black px-6 py-3 font-bold text-white"
-              >
-                Clear
-              </button>
+              <div>
+                {activeAlarm.latitude && activeAlarm.longitude ? (
+                  <AlarmMap
+                    latitude={activeAlarm.latitude}
+                    longitude={activeAlarm.longitude}
+                    title={`${activeAlarm.alarm_type} alarm`}
+                    subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${
+                      activeAlarm.site_name
+                    }`}
+                  />
+                ) : (
+                  <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
+                    No GPS location available for this alert
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ) : (
@@ -313,7 +342,8 @@ export default function DispatcherPage() {
 
                     {alarm.latitude && alarm.longitude && (
                       <p className="text-sm text-slate-400">
-                        GPS: {alarm.latitude.toFixed(5)}, {alarm.longitude.toFixed(5)}
+                        GPS: {alarm.latitude.toFixed(5)},{" "}
+                        {alarm.longitude.toFixed(5)}
                       </p>
                     )}
 
@@ -332,7 +362,9 @@ export default function DispatcherPage() {
                   </div>
 
                   <div className="flex flex-col items-end gap-2">
-                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}>
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}
+                    >
                       {alarm.alarm_type}
                     </span>
 

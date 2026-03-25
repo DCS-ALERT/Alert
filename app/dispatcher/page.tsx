@@ -40,6 +40,7 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-red-700",
       badge: "bg-red-200 text-red-900",
       title: "🚨 PANIC ALERT 🚨",
+      flash: "animate-pulse ring-8 ring-red-300/60",
     };
   }
 
@@ -48,6 +49,7 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-purple-700",
       badge: "bg-purple-200 text-purple-900",
       title: "🔒 LOCKDOWN ALERT 🔒",
+      flash: "animate-pulse ring-8 ring-purple-300/60",
     };
   }
 
@@ -56,6 +58,7 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-blue-700",
       badge: "bg-blue-200 text-blue-900",
       title: "🏥 MEDICAL ALERT 🏥",
+      flash: "animate-pulse ring-8 ring-blue-300/60",
     };
   }
 
@@ -64,6 +67,7 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-orange-600",
       badge: "bg-orange-200 text-orange-900",
       title: "🔥 FIRE ALERT 🔥",
+      flash: "animate-pulse ring-8 ring-orange-300/60",
     };
   }
 
@@ -71,6 +75,7 @@ function getAlarmTheme(alarmType: string) {
     panel: "bg-slate-700",
     badge: "bg-slate-200 text-slate-900",
     title: "⚠️ ALERT ⚠️",
+    flash: "animate-pulse ring-8 ring-slate-300/40",
   };
 }
 
@@ -203,11 +208,27 @@ export default function DispatcherPage() {
     ? getAlarmTheme(activeAlarm.alarm_type)
     : null;
 
+  const activeTrackedAlarms = useMemo(() => {
+    return alarms.filter(
+      (a) =>
+        a.status === "Active" &&
+        a.latitude !== null &&
+        a.longitude !== null
+    );
+  }, [alarms]);
+
+  const activeAlarmCount = alarms.filter((a) => a.status === "Active").length;
+
   return (
     <main className="min-h-screen bg-black p-6 text-white">
       <div className="mx-auto max-w-7xl">
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
+          <div>
+            <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
+            <p className="mt-1 text-sm text-slate-400">
+              Live emergency control screen
+            </p>
+          </div>
 
           <div className="flex gap-3">
             <button
@@ -232,37 +253,85 @@ export default function DispatcherPage() {
           </div>
         </div>
 
+        <div className="mb-6 grid gap-4 md:grid-cols-3">
+          <div className="rounded-2xl bg-slate-900 p-4">
+            <div className="text-sm text-slate-400">System status</div>
+            <div className="mt-1 text-lg font-semibold text-emerald-400">
+              Live
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-slate-900 p-4">
+            <div className="text-sm text-slate-400">Active alarms</div>
+            <div className="mt-1 text-lg font-semibold">
+              {activeAlarmCount}
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-slate-900 p-4">
+            <div className="text-sm text-slate-400">Tracked alerts on map</div>
+            <div className="mt-1 text-lg font-semibold">
+              {activeTrackedAlarms.length}
+            </div>
+          </div>
+        </div>
+
         <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
           {statusMessage}
         </div>
 
         {activeAlarm && activeTheme ? (
-          <div className={`${activeTheme.panel} mb-8 rounded-3xl p-8`}>
+          <div
+            className={`${activeTheme.panel} ${activeTheme.flash} mb-8 rounded-3xl p-8 transition-all`}
+          >
             <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
               <div className="text-center lg:text-left">
-                <h1 className="text-5xl font-bold">{activeTheme.title}</h1>
+                <h1 className="text-5xl font-black tracking-wide">
+                  {activeTheme.title}
+                </h1>
 
-                <p className="mt-4 text-2xl">{activeAlarm.alarm_type}</p>
-                <p className="mt-2">
-                  By: {activeAlarm.triggered_by_name || "Unknown"}
-                </p>
-                <p>Role: {activeAlarm.triggered_by_role || "Unknown"}</p>
-                <p>Location: {activeAlarm.location || "Unknown"}</p>
-                <p>Site: {activeAlarm.site_name}</p>
-                <p className="mt-2">
-                  {new Date(activeAlarm.created_at).toLocaleString()}
-                </p>
+                <div className="mt-5 rounded-2xl bg-black/15 p-5">
+                  <p className="text-3xl font-bold uppercase">
+                    {activeAlarm.alarm_type}
+                  </p>
+
+                  <p className="mt-4 text-xl font-semibold">
+                    👤 {activeAlarm.triggered_by_name || "Unknown user"}
+                  </p>
+
+                  <p className="mt-2 text-lg">
+                    Role: {activeAlarm.triggered_by_role || "Unknown"}
+                  </p>
+
+                  <p className="mt-2 text-lg">
+                    📍 {activeAlarm.location || "Unknown location"}
+                  </p>
+
+                  <p className="mt-2 text-lg">
+                    🏢 {activeAlarm.site_name}
+                  </p>
+
+                  <p className="mt-2 text-lg">
+                    🕒 {new Date(activeAlarm.created_at).toLocaleString()}
+                  </p>
+
+                  {activeAlarm.message && (
+                    <p className="mt-4 text-lg font-medium">
+                      {activeAlarm.message}
+                    </p>
+                  )}
+                </div>
 
                 {activeAlarm.latitude !== null &&
                   activeAlarm.longitude !== null && (
-                    <div className="mt-4">
+                    <div className="mt-4 rounded-2xl bg-black/15 p-4">
                       <p>
                         GPS: {activeAlarm.latitude.toFixed(5)},{" "}
                         {activeAlarm.longitude.toFixed(5)}
                       </p>
 
                       {activeAlarm.location_accuracy !== null && (
-                        <p>
+                        <p className="mt-1">
                           Accuracy: {Math.round(activeAlarm.location_accuracy)}m
                         </p>
                       )}
@@ -271,7 +340,7 @@ export default function DispatcherPage() {
                         href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-2 inline-block font-semibold underline text-white"
+                        className="mt-3 inline-block font-semibold underline text-white"
                       >
                         Open in Google Maps
                       </a>
@@ -302,9 +371,7 @@ export default function DispatcherPage() {
                     latitude={activeAlarm.latitude}
                     longitude={activeAlarm.longitude}
                     title={`${activeAlarm.alarm_type} alarm`}
-                    subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${
-                      activeAlarm.site_name
-                    }`}
+                    subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${activeAlarm.site_name}`}
                   />
                 ) : (
                   <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
@@ -321,6 +388,77 @@ export default function DispatcherPage() {
             </h1>
           </div>
         )}
+
+        <div className="mb-8 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-2xl font-semibold">Active Alarm Map</h2>
+            <div className="text-sm text-slate-400">
+              {activeTrackedAlarms.length} active tracked alerts
+            </div>
+          </div>
+
+          {activeTrackedAlarms.length > 0 ? (
+            <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+              <div className="rounded-2xl overflow-hidden">
+                <AlarmMap
+                  latitude={activeTrackedAlarms[0].latitude as number}
+                  longitude={activeTrackedAlarms[0].longitude as number}
+                  title="Active alarms"
+                  subtitle="Use alarm cards to review active incidents"
+                />
+              </div>
+
+              <div className="space-y-3">
+                {activeTrackedAlarms.map((alarm) => {
+                  const theme = getAlarmTheme(alarm.alarm_type);
+
+                  return (
+                    <div
+                      key={alarm.id}
+                      className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-semibold">
+                          {alarm.triggered_by_name || "Unknown"}
+                        </div>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}
+                        >
+                          {alarm.alarm_type}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 text-sm text-slate-300">
+                        {alarm.location || "Unknown location"}
+                      </div>
+
+                      <div className="mt-1 text-sm text-slate-400">
+                        {alarm.latitude?.toFixed(5)}, {alarm.longitude?.toFixed(5)}
+                      </div>
+
+                      <div className="mt-1 text-xs text-slate-500">
+                        {new Date(alarm.created_at).toLocaleString()}
+                      </div>
+
+                      <a
+                        href={`https://www.google.com/maps?q=${alarm.latitude},${alarm.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-block text-sm font-semibold underline"
+                      >
+                        Open map
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
+              No active alarms with GPS location yet
+            </div>
+          )}
+        </div>
 
         <div>
           <h2 className="mb-4 text-xl">All Alarms</h2>
@@ -339,23 +477,23 @@ export default function DispatcherPage() {
                       {alarm.alarm_type} - {alarm.location || "Unknown location"}
                     </p>
 
-                    <p>
+                    <p className="mt-1">
                       {alarm.triggered_by_name || "Unknown"} (
                       {alarm.triggered_by_role || "Unknown"})
                     </p>
 
-                    <p>Site: {alarm.site_name}</p>
-                    <p>Status: {alarm.status}</p>
+                    <p className="mt-1">Site: {alarm.site_name}</p>
+                    <p className="mt-1">Status: {alarm.status}</p>
 
                     {alarm.latitude !== null && alarm.longitude !== null && (
-                      <p className="text-sm text-slate-400">
+                      <p className="mt-1 text-sm text-slate-400">
                         GPS: {alarm.latitude.toFixed(5)},{" "}
                         {alarm.longitude.toFixed(5)}
                       </p>
                     )}
 
                     {alarm.acknowledged && (
-                      <p className="text-sm text-emerald-400">
+                      <p className="mt-1 text-sm text-emerald-400">
                         Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
                         {alarm.acknowledged_at
                           ? new Date(alarm.acknowledged_at).toLocaleString()
@@ -363,7 +501,7 @@ export default function DispatcherPage() {
                       </p>
                     )}
 
-                    <p className="text-sm">
+                    <p className="mt-1 text-sm">
                       {new Date(alarm.created_at).toLocaleString()}
                     </p>
                   </div>

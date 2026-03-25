@@ -32,6 +32,17 @@ type Alarm = {
   location_accuracy: number | null;
 };
 
+type UserLocation = {
+  user_id: string;
+  full_name: string | null;
+  role: string | null;
+  site_name: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  accuracy: number | null;
+  updated_at: string;
+};
+
 function getAlarmTheme(alarmType: string) {
   const type = alarmType.toLowerCase();
 
@@ -81,6 +92,7 @@ function getAlarmTheme(alarmType: string) {
 
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
   const [statusMessage, setStatusMessage] = useState("Starting...");
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
@@ -94,11 +106,25 @@ export default function DispatcherPage() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      setStatusMessage(`Load error: ${error.message}`);
+      setStatusMessage(`Load alarms error: ${error.message}`);
       return;
     }
 
     setAlarms(data || []);
+  }
+
+  async function loadUserLocations() {
+    const { data, error } = await supabase
+      .from("user_locations")
+      .select("*")
+      .order("updated_at", { ascending: false });
+
+    if (error) {
+      setStatusMessage(`Load user locations error: ${error.message}`);
+      return;
+    }
+
+    setUserLocations(data || []);
   }
 
   function enableSound() {
@@ -167,9 +193,10 @@ export default function DispatcherPage() {
 
   useEffect(() => {
     loadAlarms();
+    loadUserLocations();
 
-    const channel = supabase
-      .channel("dispatcher-channel")
+    const alarmsChannel = supabase
+      .channel("dispatcher-alarms")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
@@ -177,8 +204,18 @@ export default function DispatcherPage() {
       )
       .subscribe();
 
+    const locationsChannel = supabase
+      .channel("dispatcher-user-locations")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "user_locations" },
+        () => loadUserLocations()
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(alarmsChannel);
+      supabase.removeChannel(locationsChannel);
     };
   }, []);
 
@@ -217,7 +254,11 @@ export default function DispatcherPage() {
     );
   }, [alarms]);
 
-  const activeAlarmCount = alarms.filter((a) => a.status === "Active").length;
+  const liveTrackedUsers = useMemo(() => {
+    return userLocations.filter(
+      (u) => u.latitude !== null && u.longitude !== null
+    );
+  }, [userLocations]);
 
   return (
     <main className="min-h-screen bg-black p-6 text-white">
@@ -253,7 +294,7 @@ export default function DispatcherPage() {
           </div>
         </div>
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
+        <div className="mb-6 grid gap-4 md:grid-cols-4">
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">System status</div>
             <div className="mt-1 text-lg font-semibold text-emerald-400">
@@ -264,14 +305,21 @@ export default function DispatcherPage() {
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">Active alarms</div>
             <div className="mt-1 text-lg font-semibold">
-              {activeAlarmCount}
+              {alarms.filter((a) => a.status === "Active").length}
             </div>
           </div>
 
           <div className="rounded-2xl bg-slate-900 p-4">
-            <div className="text-sm text-slate-400">Tracked alerts on map</div>
+            <div className="text-sm text-slate-400">Alarm GPS points</div>
             <div className="mt-1 text-lg font-semibold">
               {activeTrackedAlarms.length}
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-slate-900 p-4">
+            <div className="text-sm text-slate-400">Live tracked users</div>
+            <div className="mt-1 text-lg font-semibold">
+              {liveTrackedUsers.length}
             </div>
           </div>
         </div>
@@ -314,12 +362,6 @@ export default function DispatcherPage() {
                   <p className="mt-2 text-lg">
                     🕒 {new Date(activeAlarm.created_at).toLocaleString()}
                   </p>
-
-                  {activeAlarm.message && (
-                    <p className="mt-4 text-lg font-medium">
-                      {activeAlarm.message}
-                    </p>
-                  )}
                 </div>
 
                 {activeAlarm.latitude !== null &&
@@ -335,15 +377,6 @@ export default function DispatcherPage() {
                           Accuracy: {Math.round(activeAlarm.location_accuracy)}m
                         </p>
                       )}
-
-                      <a
-                        href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-3 inline-block font-semibold underline text-white"
-                      >
-                        Open in Google Maps
-                      </a>
                     </div>
                   )}
 
@@ -372,6 +405,15 @@ export default function DispatcherPage() {
                     longitude={activeAlarm.longitude}
                     title={`${activeAlarm.alarm_type} alarm`}
                     subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${activeAlarm.site_name}`}
+                    extraMarkers={liveTrackedUsers
+                      .filter((u) => u.user_id !== activeAlarm.id)
+                      .map((u) => ({
+                        id: u.user_id,
+                        latitude: u.latitude as number,
+                        longitude: u.longitude as number,
+                        title: u.full_name || "User",
+                        subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
+                      }))}
                   />
                 ) : (
                   <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
@@ -391,150 +433,72 @@ export default function DispatcherPage() {
 
         <div className="mb-8 rounded-3xl border border-slate-800 bg-slate-900 p-6">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-2xl font-semibold">Active Alarm Map</h2>
+            <h2 className="text-2xl font-semibold">Live User Map</h2>
             <div className="text-sm text-slate-400">
-              {activeTrackedAlarms.length} active tracked alerts
+              {liveTrackedUsers.length} users currently tracked
             </div>
           </div>
 
-          {activeTrackedAlarms.length > 0 ? (
+          {liveTrackedUsers.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
               <div className="rounded-2xl overflow-hidden">
                 <AlarmMap
-                  latitude={activeTrackedAlarms[0].latitude as number}
-                  longitude={activeTrackedAlarms[0].longitude as number}
-                  title="Active alarms"
-                  subtitle="Use alarm cards to review active incidents"
+                  latitude={liveTrackedUsers[0].latitude as number}
+                  longitude={liveTrackedUsers[0].longitude as number}
+                  title={liveTrackedUsers[0].full_name || "Tracked user"}
+                  subtitle={`${liveTrackedUsers[0].role || "User"} · ${
+                    liveTrackedUsers[0].site_name || ""
+                  }`}
+                  extraMarkers={liveTrackedUsers.slice(1).map((u) => ({
+                    id: u.user_id,
+                    latitude: u.latitude as number,
+                    longitude: u.longitude as number,
+                    title: u.full_name || "Tracked user",
+                    subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
+                  }))}
                 />
               </div>
 
               <div className="space-y-3">
-                {activeTrackedAlarms.map((alarm) => {
-                  const theme = getAlarmTheme(alarm.alarm_type);
-
-                  return (
-                    <div
-                      key={alarm.id}
-                      className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="font-semibold">
-                          {alarm.triggered_by_name || "Unknown"}
-                        </div>
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}
-                        >
-                          {alarm.alarm_type}
-                        </span>
-                      </div>
-
-                      <div className="mt-2 text-sm text-slate-300">
-                        {alarm.location || "Unknown location"}
-                      </div>
-
-                      <div className="mt-1 text-sm text-slate-400">
-                        {alarm.latitude?.toFixed(5)}, {alarm.longitude?.toFixed(5)}
-                      </div>
-
-                      <div className="mt-1 text-xs text-slate-500">
-                        {new Date(alarm.created_at).toLocaleString()}
-                      </div>
-
-                      <a
-                        href={`https://www.google.com/maps?q=${alarm.latitude},${alarm.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-3 inline-block text-sm font-semibold underline"
-                      >
-                        Open map
-                      </a>
+                {liveTrackedUsers.map((user) => (
+                  <div
+                    key={user.user_id}
+                    className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
+                  >
+                    <div className="font-semibold">
+                      {user.full_name || "Unknown user"}
                     </div>
-                  );
-                })}
+                    <div className="mt-1 text-sm text-slate-300">
+                      {user.role || "User"} · {user.site_name || "Unknown site"}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-400">
+                      {user.latitude?.toFixed(5)}, {user.longitude?.toFixed(5)}
+                    </div>
+                    {user.accuracy !== null && (
+                      <div className="mt-1 text-xs text-slate-500">
+                        Accuracy: {Math.round(user.accuracy)}m
+                      </div>
+                    )}
+                    <div className="mt-1 text-xs text-slate-500">
+                      Updated: {new Date(user.updated_at).toLocaleString()}
+                    </div>
+                    <a
+                      href={`https://www.google.com/maps?q=${user.latitude},${user.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 inline-block text-sm font-semibold underline"
+                    >
+                      Open map
+                    </a>
+                  </div>
+                ))}
               </div>
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
-              No active alarms with GPS location yet
+              No live tracked users yet
             </div>
           )}
-        </div>
-
-        <div>
-          <h2 className="mb-4 text-xl">All Alarms</h2>
-
-          {alarms.map((alarm) => {
-            const theme = getAlarmTheme(alarm.alarm_type);
-
-            return (
-              <div
-                key={alarm.id}
-                className="mb-3 rounded border border-gray-700 p-4"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="font-bold">
-                      {alarm.alarm_type} - {alarm.location || "Unknown location"}
-                    </p>
-
-                    <p className="mt-1">
-                      {alarm.triggered_by_name || "Unknown"} (
-                      {alarm.triggered_by_role || "Unknown"})
-                    </p>
-
-                    <p className="mt-1">Site: {alarm.site_name}</p>
-                    <p className="mt-1">Status: {alarm.status}</p>
-
-                    {alarm.latitude !== null && alarm.longitude !== null && (
-                      <p className="mt-1 text-sm text-slate-400">
-                        GPS: {alarm.latitude.toFixed(5)},{" "}
-                        {alarm.longitude.toFixed(5)}
-                      </p>
-                    )}
-
-                    {alarm.acknowledged && (
-                      <p className="mt-1 text-sm text-emerald-400">
-                        Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
-                        {alarm.acknowledged_at
-                          ? new Date(alarm.acknowledged_at).toLocaleString()
-                          : "-"}
-                      </p>
-                    )}
-
-                    <p className="mt-1 text-sm">
-                      {new Date(alarm.created_at).toLocaleString()}
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col items-end gap-2">
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}
-                    >
-                      {alarm.alarm_type}
-                    </span>
-
-                    {alarm.status === "Active" && (
-                      <button
-                        onClick={() => acknowledgeAlarm(alarm.id)}
-                        className="rounded bg-white px-3 py-2 text-sm font-semibold text-black"
-                      >
-                        Acknowledge
-                      </button>
-                    )}
-
-                    {alarm.status !== "Cleared" && (
-                      <button
-                        onClick={() => clearAlarm(alarm.id)}
-                        className="rounded bg-slate-800 px-3 py-2 text-sm font-semibold text-white"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
         </div>
 
         <audio ref={audioRef} src="/alarm.mp3" preload="auto" />

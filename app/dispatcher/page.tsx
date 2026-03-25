@@ -6,6 +6,11 @@ import { supabase } from "@/lib/supabase";
 
 const AlarmMap = dynamic(() => import("@/components/AlarmMap"), {
   ssr: false,
+  loading: () => (
+    <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
+      Loading map...
+    </div>
+  ),
 });
 
 type Alarm = {
@@ -248,29 +253,30 @@ export default function DispatcherPage() {
                   {new Date(activeAlarm.created_at).toLocaleString()}
                 </p>
 
-                {activeAlarm.latitude && activeAlarm.longitude && (
-                  <div className="mt-4">
-                    <p>
-                      GPS: {activeAlarm.latitude.toFixed(5)},{" "}
-                      {activeAlarm.longitude.toFixed(5)}
-                    </p>
-
-                    {activeAlarm.location_accuracy && (
+                {activeAlarm.latitude !== null &&
+                  activeAlarm.longitude !== null && (
+                    <div className="mt-4">
                       <p>
-                        Accuracy: {Math.round(activeAlarm.location_accuracy)}m
+                        GPS: {activeAlarm.latitude.toFixed(5)},{" "}
+                        {activeAlarm.longitude.toFixed(5)}
                       </p>
-                    )}
 
-                    <a
-                      href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-block font-semibold underline text-white"
-                    >
-                      Open in Google Maps
-                    </a>
-                  </div>
-                )}
+                      {activeAlarm.location_accuracy !== null && (
+                        <p>
+                          Accuracy: {Math.round(activeAlarm.location_accuracy)}m
+                        </p>
+                      )}
+
+                      <a
+                        href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block font-semibold underline text-white"
+                      >
+                        Open in Google Maps
+                      </a>
+                    </div>
+                  )}
 
                 <div className="mt-6 flex flex-wrap justify-center gap-4 lg:justify-start">
                   <button
@@ -290,7 +296,8 @@ export default function DispatcherPage() {
               </div>
 
               <div>
-                {activeAlarm.latitude && activeAlarm.longitude ? (
+                {activeAlarm.latitude !== null &&
+                activeAlarm.longitude !== null ? (
                   <AlarmMap
                     latitude={activeAlarm.latitude}
                     longitude={activeAlarm.longitude}
@@ -340,7 +347,7 @@ export default function DispatcherPage() {
                     <p>Site: {alarm.site_name}</p>
                     <p>Status: {alarm.status}</p>
 
-                    {alarm.latitude && alarm.longitude && (
+                    {alarm.latitude !== null && alarm.longitude !== null && (
                       <p className="text-sm text-slate-400">
                         GPS: {alarm.latitude.toFixed(5)},{" "}
                         {alarm.longitude.toFixed(5)}

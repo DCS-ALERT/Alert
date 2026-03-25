@@ -405,15 +405,13 @@ export default function DispatcherPage() {
                     longitude={activeAlarm.longitude}
                     title={`${activeAlarm.alarm_type} alarm`}
                     subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${activeAlarm.site_name}`}
-                    extraMarkers={liveTrackedUsers
-                      .filter((u) => u.user_id !== activeAlarm.id)
-                      .map((u) => ({
-                        id: u.user_id,
-                        latitude: u.latitude as number,
-                        longitude: u.longitude as number,
-                        title: u.full_name || "User",
-                        subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
-                      }))}
+                    extraMarkers={liveTrackedUsers.map((u) => ({
+                      id: u.user_id,
+                      latitude: u.latitude as number,
+                      longitude: u.longitude as number,
+                      title: u.full_name || "User",
+                      subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
+                    }))}
                   />
                 ) : (
                   <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
@@ -441,7 +439,7 @@ export default function DispatcherPage() {
 
           {liveTrackedUsers.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-              <div className="rounded-2xl overflow-hidden">
+              <div className="overflow-hidden rounded-2xl">
                 <AlarmMap
                   latitude={liveTrackedUsers[0].latitude as number}
                   longitude={liveTrackedUsers[0].longitude as number}

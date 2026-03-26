@@ -196,59 +196,52 @@ export default function HomePage() {
     setStatusMessage(`${type} alarm sent`);
   }
 
-  async function updateLiveLocation() {
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData.user) return;
+ async function updateLiveLocation() {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) return;
 
-    const { data: currentProfile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userData.user.id)
-      .maybeSingle();
+  const { data: currentProfile } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", userData.user.id)
+    .maybeSingle();
 
-    const locationData = await getLocation();
+  const locationData = await getLocation();
 
-    if (locationData.latitude === null || locationData.longitude === null) {
-      setStatusMessage("Unable to get live location");
-      return;
-    }
+  if (locationData.latitude === null || locationData.longitude === null) {
+    setStatusMessage("Unable to get live location");
+    return;
+  }
 
-    const { error } = await supabase.from("user_locations").upsert([
+  const { error } = await supabase
+    .from("user_locations")
+    .upsert(
+      [
+        {
+          user_id: userData.user.id,
+          full_name: currentProfile?.full_name || userData.user.email,
+          role: currentProfile?.role || "User",
+          site_name: currentProfile?.site_name || "Test Site",
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: locationData.accuracy,
+          updated_at: new Date().toISOString(),
+        },
+      ],
       {
-        user_id: userData.user.id,
-        full_name: currentProfile?.full_name || userData.user.email,
-        role: currentProfile?.role || "User",
-        site_name: currentProfile?.site_name || "Test Site",
-        latitude: locationData.latitude,
-        longitude: locationData.longitude,
-        accuracy: locationData.accuracy,
-        updated_at: new Date().toISOString(),
-      },
-    ]);
-
-    if (error) {
-      setStatusMessage(`Tracking error: ${error.message}`);
-      return;
-    }
-
-    setStatusMessage(
-      `Live tracking updated at ${new Date().toLocaleTimeString()}`
+        onConflict: "user_id",
+      }
     );
+
+  if (error) {
+    setStatusMessage(`Tracking error: ${error.message}`);
+    return;
   }
 
-  async function startTracking() {
-    if (trackingEnabled) return;
-
-    setStatusMessage("Starting live tracking...");
-    await updateLiveLocation();
-
-    trackingIntervalRef.current = setInterval(() => {
-      updateLiveLocation();
-    }, 30000);
-
-    setTrackingEnabled(true);
-    setStatusMessage("Live tracking enabled");
-  }
+  setStatusMessage(
+    `Live tracking updated at ${new Date().toLocaleTimeString()}`
+  );
+}
 
   async function stopTracking() {
     if (trackingIntervalRef.current) {

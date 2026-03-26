@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase";
 const AlarmMap = dynamic(() => import("@/components/AlarmMap"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
+    <div className="flex h-[360px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
       Loading map...
     </div>
   ),
@@ -51,7 +51,8 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-red-700",
       badge: "bg-red-200 text-red-900",
       title: "🚨 PANIC ALERT 🚨",
-      flash: "animate-pulse ring-8 ring-red-300/60",
+      flashClass: "ring-red-300/70",
+      backdrop: "bg-red-950/35",
     };
   }
 
@@ -60,7 +61,8 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-purple-700",
       badge: "bg-purple-200 text-purple-900",
       title: "🔒 LOCKDOWN ALERT 🔒",
-      flash: "animate-pulse ring-8 ring-purple-300/60",
+      flashClass: "ring-purple-300/70",
+      backdrop: "bg-purple-950/35",
     };
   }
 
@@ -69,7 +71,8 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-blue-700",
       badge: "bg-blue-200 text-blue-900",
       title: "🏥 MEDICAL ALERT 🏥",
-      flash: "animate-pulse ring-8 ring-blue-300/60",
+      flashClass: "ring-blue-300/70",
+      backdrop: "bg-blue-950/35",
     };
   }
 
@@ -78,7 +81,8 @@ function getAlarmTheme(alarmType: string) {
       panel: "bg-orange-600",
       badge: "bg-orange-200 text-orange-900",
       title: "🔥 FIRE ALERT 🔥",
-      flash: "animate-pulse ring-8 ring-orange-300/60",
+      flashClass: "ring-orange-300/70",
+      backdrop: "bg-orange-950/35",
     };
   }
 
@@ -86,8 +90,42 @@ function getAlarmTheme(alarmType: string) {
     panel: "bg-slate-700",
     badge: "bg-slate-200 text-slate-900",
     title: "⚠️ ALERT ⚠️",
-    flash: "animate-pulse ring-8 ring-slate-300/40",
+    flashClass: "ring-slate-300/60",
+    backdrop: "bg-slate-950/35",
   };
+}
+
+function getAlarmPriorityWeight(alarmType: string) {
+  const type = alarmType.toLowerCase();
+  if (type === "panic") return 4;
+  if (type === "lockdown") return 3;
+  if (type === "fire") return 2;
+  if (type === "medical") return 1;
+  return 0;
+}
+
+function haversineDistanceMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const earthRadius = 6371000;
+
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadius * c;
 }
 
 export default function DispatcherPage() {
@@ -96,6 +134,7 @@ export default function DispatcherPage() {
   const [statusMessage, setStatusMessage] = useState("Starting...");
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
+  const [flashOn, setFlashOn] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -131,6 +170,7 @@ export default function DispatcherPage() {
     if (!audioRef.current) return;
 
     audioRef.current.volume = 1;
+    audioRef.current.loop = true;
     audioRef.current.currentTime = 0;
 
     audioRef.current
@@ -146,6 +186,12 @@ export default function DispatcherPage() {
         console.error("Sound enable failed:", err);
         setStatusMessage("Browser blocked audio. Tap Enable Sound again.");
       });
+  }
+
+  function stopAlarmSound() {
+    if (!audioRef.current) return;
+    audioRef.current.pause();
+    audioRef.current.currentTime = 0;
   }
 
   async function acknowledgeAlarm(id: string) {
@@ -174,6 +220,7 @@ export default function DispatcherPage() {
       return;
     }
 
+    stopAlarmSound();
     setStatusMessage(`Acknowledged by ${name}`);
   }
 
@@ -188,6 +235,7 @@ export default function DispatcherPage() {
       return;
     }
 
+    stopAlarmSound();
     setStatusMessage("Alarm cleared");
   }
 
@@ -227,6 +275,7 @@ export default function DispatcherPage() {
     const isActiveAlarm = newest.status === "Active";
 
     if (isNewAlarm && isActiveAlarm) {
+      audioRef.current.loop = true;
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch((err) => {
         console.error("Alarm play failed:", err);
@@ -237,8 +286,35 @@ export default function DispatcherPage() {
     setLastAlarmId(newest.id);
   }, [alarms, soundEnabled, lastAlarmId]);
 
+  useEffect(() => {
+    const active = alarms.find((a) => a.status === "Active");
+    if (!active) {
+      setFlashOn(false);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setFlashOn((prev) => !prev);
+    }, 700);
+
+    return () => clearInterval(interval);
+  }, [alarms]);
+
   const activeAlarm = useMemo(() => {
-    return alarms.find((a) => a.status === "Active");
+    const active = alarms.filter((a) => a.status === "Active");
+    if (!active.length) return undefined;
+
+    return [...active].sort((a, b) => {
+      const weightDiff =
+        getAlarmPriorityWeight(b.alarm_type) -
+        getAlarmPriorityWeight(a.alarm_type);
+
+      if (weightDiff !== 0) return weightDiff;
+
+      return (
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    })[0];
   }, [alarms]);
 
   const activeTheme = activeAlarm
@@ -260,8 +336,44 @@ export default function DispatcherPage() {
     );
   }, [userLocations]);
 
+  const nearestResponder = useMemo(() => {
+    if (
+      !activeAlarm ||
+      activeAlarm.latitude === null ||
+      activeAlarm.longitude === null
+    ) {
+      return null;
+    }
+
+    const responders = liveTrackedUsers
+      .map((user) => {
+        const distance = haversineDistanceMeters(
+          activeAlarm.latitude as number,
+          activeAlarm.longitude as number,
+          user.latitude as number,
+          user.longitude as number
+        );
+
+        return {
+          ...user,
+          distance,
+        };
+      })
+      .sort((a, b) => a.distance - b.distance);
+
+    return responders[0] || null;
+  }, [activeAlarm, liveTrackedUsers]);
+
+  const activeAlarmCount = alarms.filter((a) => a.status === "Active").length;
+
   return (
-    <main className="min-h-screen bg-black p-6 text-white">
+    <main
+      className={`min-h-screen p-6 text-white transition-colors duration-300 ${
+        activeAlarm && activeTheme && flashOn
+          ? activeTheme.backdrop
+          : "bg-black"
+      }`}
+    >
       <div className="mx-auto max-w-7xl">
         <div className="mb-6 flex items-center justify-between">
           <div>
@@ -285,7 +397,10 @@ export default function DispatcherPage() {
 
             <button
               onClick={() => {
-                audioRef.current?.play().catch((err) => console.error(err));
+                if (!audioRef.current) return;
+                audioRef.current.loop = false;
+                audioRef.current.currentTime = 0;
+                audioRef.current.play().catch((err) => console.error(err));
               }}
               className="rounded bg-blue-500 px-4 py-2 font-semibold text-white"
             >
@@ -305,7 +420,7 @@ export default function DispatcherPage() {
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">Active alarms</div>
             <div className="mt-1 text-lg font-semibold">
-              {alarms.filter((a) => a.status === "Active").length}
+              {activeAlarmCount}
             </div>
           </div>
 
@@ -330,7 +445,9 @@ export default function DispatcherPage() {
 
         {activeAlarm && activeTheme ? (
           <div
-            className={`${activeTheme.panel} ${activeTheme.flash} mb-8 rounded-3xl p-8 transition-all`}
+            className={`${activeTheme.panel} ${
+              flashOn ? "ring-8" : "ring-0"
+            } ${activeTheme.flashClass} mb-8 rounded-3xl p-8 transition-all duration-300`}
           >
             <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
               <div className="text-center lg:text-left">
@@ -362,6 +479,12 @@ export default function DispatcherPage() {
                   <p className="mt-2 text-lg">
                     🕒 {new Date(activeAlarm.created_at).toLocaleString()}
                   </p>
+
+                  {activeAlarm.message && (
+                    <p className="mt-4 text-lg font-medium">
+                      {activeAlarm.message}
+                    </p>
+                  )}
                 </div>
 
                 {activeAlarm.latitude !== null &&
@@ -377,8 +500,36 @@ export default function DispatcherPage() {
                           Accuracy: {Math.round(activeAlarm.location_accuracy)}m
                         </p>
                       )}
+
+                      <a
+                        href={`https://www.google.com/maps?q=${activeAlarm.latitude},${activeAlarm.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-block font-semibold underline text-white"
+                      >
+                        Open in Google Maps
+                      </a>
                     </div>
                   )}
+
+                {nearestResponder && (
+                  <div className="mt-4 rounded-2xl bg-black/20 p-4">
+                    <p className="text-lg font-semibold">
+                      Nearest responder
+                    </p>
+                    <p className="mt-2">
+                      {nearestResponder.full_name || "Unknown user"} (
+                      {nearestResponder.role || "User"})
+                    </p>
+                    <p className="mt-1">
+                      Approx. {Math.round(nearestResponder.distance)}m away
+                    </p>
+                    <p className="mt-1 text-sm text-white/80">
+                      Last updated:{" "}
+                      {new Date(nearestResponder.updated_at).toLocaleTimeString()}
+                    </p>
+                  </div>
+                )}
 
                 <div className="mt-6 flex flex-wrap justify-center gap-4 lg:justify-start">
                   <button
@@ -405,16 +556,18 @@ export default function DispatcherPage() {
                     longitude={activeAlarm.longitude}
                     title={`${activeAlarm.alarm_type} alarm`}
                     subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${activeAlarm.site_name}`}
+                    kind="alarm"
                     extraMarkers={liveTrackedUsers.map((u) => ({
                       id: u.user_id,
                       latitude: u.latitude as number,
                       longitude: u.longitude as number,
                       title: u.full_name || "User",
                       subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
+                      kind: "user",
                     }))}
                   />
                 ) : (
-                  <div className="flex h-[320px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
+                  <div className="flex h-[360px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
                     No GPS location available for this alert
                   </div>
                 )}
@@ -447,12 +600,14 @@ export default function DispatcherPage() {
                   subtitle={`${liveTrackedUsers[0].role || "User"} · ${
                     liveTrackedUsers[0].site_name || ""
                   }`}
+                  kind="user"
                   extraMarkers={liveTrackedUsers.slice(1).map((u) => ({
                     id: u.user_id,
                     latitude: u.latitude as number,
                     longitude: u.longitude as number,
                     title: u.full_name || "Tracked user",
                     subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
+                    kind: "user",
                   }))}
                 />
               </div>
@@ -497,6 +652,83 @@ export default function DispatcherPage() {
               No live tracked users yet
             </div>
           )}
+        </div>
+
+        <div>
+          <h2 className="mb-4 text-xl">All Alarms</h2>
+
+          {alarms.map((alarm) => {
+            const theme = getAlarmTheme(alarm.alarm_type);
+
+            return (
+              <div
+                key={alarm.id}
+                className="mb-3 rounded border border-gray-700 p-4"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-bold">
+                      {alarm.alarm_type} - {alarm.location || "Unknown location"}
+                    </p>
+
+                    <p className="mt-1">
+                      {alarm.triggered_by_name || "Unknown"} (
+                      {alarm.triggered_by_role || "Unknown"})
+                    </p>
+
+                    <p className="mt-1">Site: {alarm.site_name}</p>
+                    <p className="mt-1">Status: {alarm.status}</p>
+
+                    {alarm.latitude !== null && alarm.longitude !== null && (
+                      <p className="mt-1 text-sm text-slate-400">
+                        GPS: {alarm.latitude.toFixed(5)},{" "}
+                        {alarm.longitude.toFixed(5)}
+                      </p>
+                    )}
+
+                    {alarm.acknowledged && (
+                      <p className="mt-1 text-sm text-emerald-400">
+                        Acknowledged by {alarm.acknowledged_by || "Unknown"} at{" "}
+                        {alarm.acknowledged_at
+                          ? new Date(alarm.acknowledged_at).toLocaleString()
+                          : "-"}
+                      </p>
+                    )}
+
+                    <p className="mt-1 text-sm">
+                      {new Date(alarm.created_at).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-2">
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-bold ${theme.badge}`}
+                    >
+                      {alarm.alarm_type}
+                    </span>
+
+                    {alarm.status === "Active" && (
+                      <button
+                        onClick={() => acknowledgeAlarm(alarm.id)}
+                        className="rounded bg-white px-3 py-2 text-sm font-semibold text-black"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+
+                    {alarm.status !== "Cleared" && (
+                      <button
+                        onClick={() => clearAlarm(alarm.id)}
+                        className="rounded bg-slate-800 px-3 py-2 text-sm font-semibold text-white"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <audio ref={audioRef} src="/alarm.mp3" preload="auto" />

@@ -44,13 +44,34 @@ type UserLocation = {
   updated_at: string;
 };
 
+type PresenceUser = {
+  user_id: string;
+  full_name: string | null;
+  role: string | null;
+  site_name: string | null;
+  is_logged_in: boolean;
+  last_seen: string | null;
+  updated_at: string;
+};
+
+type MovementWatchState = {
+  baselineLat: number;
+  baselineLng: number;
+  baselineTime: string;
+  alertActive: boolean;
+};
+
+const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+const STALE_TRACKING_MS = 2 * 60 * 1000;
+const NO_MOVEMENT_LIMIT_MS = 50 * 60 * 1000;
+const MOVEMENT_THRESHOLD_METERS = 20;
+
 function getAlarmTheme(alarmType: string) {
   const type = alarmType.toLowerCase();
 
   if (type === "panic") {
     return {
       panel: "bg-red-700",
-      badge: "bg-red-200 text-red-900",
       title: "🚨 PANIC ALERT 🚨",
       flashClass: "ring-red-300/70",
       backdrop: "bg-red-950/35",
@@ -60,7 +81,6 @@ function getAlarmTheme(alarmType: string) {
   if (type === "lockdown") {
     return {
       panel: "bg-purple-700",
-      badge: "bg-purple-200 text-purple-900",
       title: "🔒 LOCKDOWN ALERT 🔒",
       flashClass: "ring-purple-300/70",
       backdrop: "bg-purple-950/35",
@@ -70,7 +90,6 @@ function getAlarmTheme(alarmType: string) {
   if (type === "medical") {
     return {
       panel: "bg-blue-700",
-      badge: "bg-blue-200 text-blue-900",
       title: "🏥 MEDICAL ALERT 🏥",
       flashClass: "ring-blue-300/70",
       backdrop: "bg-blue-950/35",
@@ -80,7 +99,6 @@ function getAlarmTheme(alarmType: string) {
   if (type === "fire") {
     return {
       panel: "bg-orange-600",
-      badge: "bg-orange-200 text-orange-900",
       title: "🔥 FIRE ALERT 🔥",
       flashClass: "ring-orange-300/70",
       backdrop: "bg-orange-950/35",
@@ -89,7 +107,6 @@ function getAlarmTheme(alarmType: string) {
 
   return {
     panel: "bg-slate-700",
-    badge: "bg-slate-200 text-slate-900",
     title: "⚠️ ALERT ⚠️",
     flashClass: "ring-slate-300/60",
     backdrop: "bg-slate-950/35",
@@ -155,17 +172,57 @@ function dedupeLatestUserLocations(rows: UserLocation[]) {
   });
 }
 
+function dedupeLatestPresence(rows: PresenceUser[]) {
+  const latestByUser = new Map<string, PresenceUser>();
+
+  for (const row of rows) {
+    const existing = latestByUser.get(row.user_id);
+
+    if (!existing) {
+      latestByUser.set(row.user_id, row);
+      continue;
+    }
+
+    const existingTime = new Date(existing.updated_at).getTime();
+    const rowTime = new Date(row.updated_at).getTime();
+
+    if (rowTime > existingTime) {
+      latestByUser.set(row.user_id, row);
+    }
+  }
+
+  return Array.from(latestByUser.values()).sort((a, b) => {
+    return (a.full_name || "").localeCompare(b.full_name || "");
+  });
+}
+
+function isPresenceOnline(user: PresenceUser) {
+  if (!user.is_logged_in || !user.last_seen) return false;
+  return Date.now() - new Date(user.last_seen).getTime() <= ONLINE_WINDOW_MS;
+}
+
+function isTrackedRecently(updatedAt: string) {
+  return Date.now() - new Date(updatedAt).getTime() <= STALE_TRACKING_MS;
+}
+
+function minutesSince(timestamp: string) {
+  return Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000);
+}
+
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
+  const [presenceUsers, setPresenceUsers] = useState<PresenceUser[]>([]);
   const [statusMessage, setStatusMessage] = useState("Starting...");
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
   const [flashOn, setFlashOn] = useState(false);
-  const [lastAlarmLoadAt, setLastAlarmLoadAt] = useState<string | null>(null);
-  const [lastLocationLoadAt, setLastLocationLoadAt] = useState<string | null>(null);
+  const [movementWatch, setMovementWatch] = useState<
+    Record<string, MovementWatchState>
+  >({});
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const movementAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadAlarms = useCallback(async () => {
     const { data, error } = await supabase
@@ -175,12 +232,10 @@ export default function DispatcherPage() {
 
     if (error) {
       setStatusMessage(`Load alarms error: ${error.message}`);
-      console.error("Load alarms error:", error);
       return;
     }
 
     setAlarms((data || []) as Alarm[]);
-    setLastAlarmLoadAt(new Date().toLocaleTimeString());
   }, []);
 
   const loadUserLocations = useCallback(async () => {
@@ -191,28 +246,42 @@ export default function DispatcherPage() {
 
     if (error) {
       setStatusMessage(`Load user locations error: ${error.message}`);
-      console.error("Load user locations error:", error);
       return;
     }
 
     const cleaned = dedupeLatestUserLocations((data || []) as UserLocation[]);
     setUserLocations(cleaned);
-    setLastLocationLoadAt(new Date().toLocaleTimeString());
+  }, []);
+
+  const loadPresenceUsers = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("user_presence")
+      .select("*")
+      .order("full_name", { ascending: true });
+
+    if (error) {
+      setStatusMessage(`Load user presence error: ${error.message}`);
+      return;
+    }
+
+    const cleaned = dedupeLatestPresence((data || []) as PresenceUser[]);
+    setPresenceUsers(cleaned);
   }, []);
 
   function enableSound() {
-    if (!audioRef.current) return;
+    if (!audioRef.current || !movementAudioRef.current) return;
 
-    audioRef.current.volume = 1;
-    audioRef.current.currentTime = 0;
-    audioRef.current.loop = true;
-
-    audioRef.current
-      .play()
+    Promise.all([
+      audioRef.current.play().then(() => {
+        audioRef.current?.pause();
+        if (audioRef.current) audioRef.current.currentTime = 0;
+      }),
+      movementAudioRef.current.play().then(() => {
+        movementAudioRef.current?.pause();
+        if (movementAudioRef.current) movementAudioRef.current.currentTime = 0;
+      }),
+    ])
       .then(() => {
-        if (!audioRef.current) return;
-        audioRef.current.pause();
-        audioRef.current.currentTime = 0;
         setSoundEnabled(true);
         setStatusMessage("Dispatcher sound enabled");
       })
@@ -226,6 +295,21 @@ export default function DispatcherPage() {
     if (!audioRef.current) return;
     audioRef.current.pause();
     audioRef.current.currentTime = 0;
+  }
+
+  function playMovementAlertSound() {
+    if (!movementAudioRef.current || !soundEnabled) return;
+    movementAudioRef.current.loop = true;
+    movementAudioRef.current.currentTime = 0;
+    movementAudioRef.current.play().catch((err) => {
+      console.error("Movement alert sound failed:", err);
+    });
+  }
+
+  function stopMovementAlertSound() {
+    if (!movementAudioRef.current) return;
+    movementAudioRef.current.pause();
+    movementAudioRef.current.currentTime = 0;
   }
 
   async function acknowledgeAlarm(id: string) {
@@ -277,52 +361,181 @@ export default function DispatcherPage() {
     await loadAlarms();
   }
 
+  const liveTrackedUsers = useMemo(() => {
+    return userLocations.filter(
+      (u) =>
+        u.latitude !== null &&
+        u.longitude !== null &&
+        isTrackedRecently(u.updated_at)
+    );
+  }, [userLocations]);
+
   useEffect(() => {
-    loadAlarms();
-    loadUserLocations();
+    setMovementWatch((prev) => {
+      const next: Record<string, MovementWatchState> = { ...prev };
+
+      for (const user of liveTrackedUsers) {
+        const existing = next[user.user_id];
+
+        if (!existing) {
+          next[user.user_id] = {
+            baselineLat: user.latitude as number,
+            baselineLng: user.longitude as number,
+            baselineTime: user.updated_at,
+            alertActive: false,
+          };
+          continue;
+        }
+
+        const distanceMoved = haversineDistanceMeters(
+          existing.baselineLat,
+          existing.baselineLng,
+          user.latitude as number,
+          user.longitude as number
+        );
+
+        if (distanceMoved >= MOVEMENT_THRESHOLD_METERS) {
+          next[user.user_id] = {
+            baselineLat: user.latitude as number,
+            baselineLng: user.longitude as number,
+            baselineTime: user.updated_at,
+            alertActive: false,
+          };
+        } else {
+          const minutesStationary = minutesSince(existing.baselineTime);
+
+          if (minutesStationary >= 50 && !existing.alertActive) {
+            next[user.user_id] = {
+              ...existing,
+              alertActive: true,
+            };
+          }
+        }
+      }
+
+      const trackedIds = new Set(liveTrackedUsers.map((u) => u.user_id));
+      Object.keys(next).forEach((userId) => {
+        if (!trackedIds.has(userId)) {
+          delete next[userId];
+        }
+      });
+
+      return next;
+    });
+  }, [liveTrackedUsers]);
+
+  const usersWithStatus = useMemo(() => {
+    return presenceUsers.map((presenceUser) => {
+      const online = isPresenceOnline(presenceUser);
+      const trackingRow = liveTrackedUsers.find(
+        (u) => u.user_id === presenceUser.user_id
+      );
+      const tracking = Boolean(trackingRow);
+      const movement = movementWatch[presenceUser.user_id];
+
+      return {
+        ...presenceUser,
+        online,
+        tracking,
+        trackingRow,
+        movementAlertActive: Boolean(movement?.alertActive),
+        stationaryMinutes: movement ? minutesSince(movement.baselineTime) : 0,
+      };
+    });
+  }, [liveTrackedUsers, movementWatch, presenceUsers]);
+
+  const movementAlerts = useMemo(() => {
+    return usersWithStatus.filter((u) => u.movementAlertActive);
+  }, [usersWithStatus]);
+
+  useEffect(() => {
+    if (movementAlerts.length > 0) {
+      playMovementAlertSound();
+    } else {
+      stopMovementAlertSound();
+    }
+  }, [movementAlerts.length, soundEnabled]);
+
+  function resetMovementTimer(userId: string) {
+    const trackingRow = liveTrackedUsers.find((u) => u.user_id === userId);
+    if (!trackingRow) return;
+
+    setMovementWatch((prev) => ({
+      ...prev,
+      [userId]: {
+        baselineLat: trackingRow.latitude as number,
+        baselineLng: trackingRow.longitude as number,
+        baselineTime: new Date().toISOString(),
+        alertActive: false,
+      },
+    }));
+
+    setStatusMessage("Movement timer reset");
+  }
+
+  useEffect(() => {
+    async function init() {
+      const { data: userData } = await supabase.auth.getUser();
+
+      if (!userData.user) {
+        setStatusMessage("Not authenticated - please log in");
+        return;
+      }
+
+      await loadAlarms();
+      await loadUserLocations();
+      await loadPresenceUsers();
+      setStatusMessage(`Dispatcher live as ${userData.user.email}`);
+    }
+
+    init();
 
     const alarmsChannel = supabase
       .channel("dispatcher-alarms")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
-        async (payload) => {
-          console.log("alarms realtime payload:", payload);
+        async () => {
           await loadAlarms();
         }
       )
-      .subscribe((status) => {
-        console.log("alarms channel status:", status);
-        if (status === "SUBSCRIBED") {
-          setStatusMessage("Dispatcher live");
-        }
-      });
+      .subscribe();
 
     const locationsChannel = supabase
       .channel("dispatcher-user-locations")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "user_locations" },
-        async (payload) => {
-          console.log("user_locations realtime payload:", payload);
+        async () => {
           await loadUserLocations();
         }
       )
-      .subscribe((status) => {
-        console.log("locations channel status:", status);
-      });
+      .subscribe();
+
+    const presenceChannel = supabase
+      .channel("dispatcher-user-presence")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "user_presence" },
+        async () => {
+          await loadPresenceUsers();
+        }
+      )
+      .subscribe();
 
     const pollInterval = setInterval(() => {
       loadAlarms();
       loadUserLocations();
+      loadPresenceUsers();
     }, 10000);
 
     return () => {
       clearInterval(pollInterval);
       supabase.removeChannel(alarmsChannel);
       supabase.removeChannel(locationsChannel);
+      supabase.removeChannel(presenceChannel);
     };
-  }, [loadAlarms, loadUserLocations]);
+  }, [loadAlarms, loadPresenceUsers, loadUserLocations]);
 
   useEffect(() => {
     if (!alarms.length || !soundEnabled || !audioRef.current) return;
@@ -375,20 +588,20 @@ export default function DispatcherPage() {
     })[0];
   }, [alarms]);
 
+  const historicalAlarms = useMemo(() => {
+    return alarms.filter((a) => a.status !== "Active");
+  }, [alarms]);
+
   const activeTheme = activeAlarm
     ? getAlarmTheme(activeAlarm.alarm_type)
     : null;
 
   const numberedLiveTrackedUsers = useMemo(() => {
-    const validUsers = userLocations.filter(
-      (u) => u.latitude !== null && u.longitude !== null
-    );
-
-    return validUsers.map((user, index) => ({
+    return liveTrackedUsers.map((user, index) => ({
       ...user,
       markerNumber: index + 1,
     }));
-  }, [userLocations]);
+  }, [liveTrackedUsers]);
 
   const nearestResponder = useMemo(() => {
     if (
@@ -454,26 +667,109 @@ export default function DispatcherPage() {
               onClick={() => {
                 loadAlarms();
                 loadUserLocations();
+                loadPresenceUsers();
                 setStatusMessage("Manual refresh complete");
               }}
               className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
             >
               Refresh
             </button>
-
-            <button
-              onClick={() => {
-                if (!audioRef.current) return;
-                audioRef.current.loop = false;
-                audioRef.current.currentTime = 0;
-                audioRef.current.play().catch((err) => console.error(err));
-              }}
-              className="rounded bg-blue-500 px-4 py-2 font-semibold text-white"
-            >
-              Test Sound
-            </button>
           </div>
         </div>
+
+        <div className="mb-6 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-2xl font-semibold">Users Logged Into System</h2>
+            <div className="text-sm text-slate-400">
+              {usersWithStatus.length} users
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-4">
+            {usersWithStatus.map((user) => (
+              <div
+                key={user.user_id}
+                className="flex min-w-[160px] items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/50 px-4 py-3"
+              >
+                <div
+                  className={`flex h-12 w-12 items-center justify-center rounded-full text-lg font-bold ${
+                    user.online ? "bg-emerald-600" : "bg-red-600"
+                  }`}
+                >
+                  {(user.full_name || "U").charAt(0).toUpperCase()}
+                </div>
+
+                <div className="min-w-0">
+                  <div className="truncate font-semibold">
+                    {user.full_name || "Unknown user"}
+                  </div>
+                  <div className="truncate text-xs text-slate-400">
+                    {user.role || "User"} · {user.site_name || "Unknown site"}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                    <span
+                      className={`rounded px-2 py-1 ${
+                        user.online
+                          ? "bg-emerald-900/50 text-emerald-200"
+                          : "bg-red-900/50 text-red-200"
+                      }`}
+                    >
+                      {user.online ? "Logged in" : "Logged out"}
+                    </span>
+
+                    {user.tracking && (
+                      <span className="rounded bg-blue-900/50 px-2 py-1 text-blue-200">
+                        GPS Live
+                      </span>
+                    )}
+
+                    {user.movementAlertActive && (
+                      <span className="rounded bg-orange-900/50 px-2 py-1 text-orange-200">
+                        No movement
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {movementAlerts.length > 0 && (
+          <div className="mb-6 rounded-3xl border border-orange-500 bg-orange-950/30 p-6">
+            <h2 className="mb-4 text-2xl font-semibold text-orange-200">
+              No Movement Alerts
+            </h2>
+
+            <div className="space-y-3">
+              {movementAlerts.map((user) => (
+                <div
+                  key={user.user_id}
+                  className="flex flex-col gap-3 rounded-2xl border border-orange-700 bg-black/20 p-4 md:flex-row md:items-center md:justify-between"
+                >
+                  <div>
+                    <div className="font-semibold">
+                      {user.full_name || "Unknown user"}
+                    </div>
+                    <div className="text-sm text-orange-100/80">
+                      No movement for approximately {user.stationaryMinutes} minutes
+                    </div>
+                    <div className="text-xs text-orange-100/70">
+                      {user.role || "User"} · {user.site_name || "Unknown site"}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => resetMovementTimer(user.user_id)}
+                    className="rounded bg-orange-500 px-4 py-2 font-semibold text-black"
+                  >
+                    Reset timer
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mb-6 grid gap-4 md:grid-cols-4">
           <div className="rounded-2xl bg-slate-900 p-4">
@@ -500,16 +796,15 @@ export default function DispatcherPage() {
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">Nearest responder</div>
             <div className="mt-1 text-lg font-semibold">
-              {nearestResponder ? `#${nearestResponder.markerNumber}` : "None"}
+              {nearestResponder
+                ? `#${nearestResponder.markerNumber}`
+                : "None"}
             </div>
           </div>
         </div>
 
         <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
-          <div>{statusMessage}</div>
-          <div className="mt-2 text-xs text-slate-400">
-            Last alarms load: {lastAlarmLoadAt || "Never"} · Last locations load: {lastLocationLoadAt || "Never"}
-          </div>
+          {statusMessage}
         </div>
 
         {activeAlarm && activeTheme ? (
@@ -569,7 +864,9 @@ export default function DispatcherPage() {
                     </p>
                     <p className="mt-1 text-sm text-white/80">
                       Last updated:{" "}
-                      {new Date(nearestResponder.updated_at).toLocaleTimeString()}
+                      {new Date(
+                        nearestResponder.updated_at
+                      ).toLocaleTimeString()}
                     </p>
                   </div>
                 ) : (
@@ -709,7 +1006,67 @@ export default function DispatcherPage() {
           )}
         </div>
 
+        <div className="mb-8 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-2xl font-semibold">Historical Alarms</h2>
+            <div className="text-sm text-slate-400">
+              {historicalAlarms.length} historical alarms
+            </div>
+          </div>
+
+          {historicalAlarms.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
+              No historical alarms yet
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {historicalAlarms.map((alarm) => (
+                <div
+                  key={alarm.id}
+                  className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
+                >
+                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="font-semibold">
+                        {alarm.alarm_type} · {alarm.site_name}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-300">
+                        {alarm.message || "No message"}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-400">
+                        Triggered by: {alarm.triggered_by_name || "Unknown"} (
+                        {alarm.triggered_by_role || "Unknown"})
+                      </div>
+                      <div className="mt-1 text-sm text-slate-400">
+                        Location: {alarm.location || "Unknown"}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        Created: {new Date(alarm.created_at).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <div className="text-right text-xs text-slate-300">
+                      <div>Status: {alarm.status}</div>
+                      {alarm.acknowledged && (
+                        <div className="mt-1">
+                          Acknowledged by {alarm.acknowledged_by || "Unknown"}
+                        </div>
+                      )}
+                      {alarm.acknowledged_at && (
+                        <div className="mt-1 text-slate-500">
+                          {new Date(alarm.acknowledged_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <audio ref={audioRef} src="/alarm.mp3" preload="auto" />
+        <audio ref={movementAudioRef} src="/alarm.mp3" preload="auto" />
       </div>
     </main>
   );

@@ -55,6 +55,7 @@ type PresenceUser = {
 };
 
 type MovementWatchState = {
+  enabled: boolean;
   baselineLat: number;
   baselineLng: number;
   baselineTime: string;
@@ -221,7 +222,7 @@ export default function DispatcherPage() {
     Record<string, MovementWatchState>
   >({});
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const alarmAudioRef = useRef<HTMLAudioElement | null>(null);
   const movementAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadAlarms = useCallback(async () => {
@@ -269,12 +270,12 @@ export default function DispatcherPage() {
   }, []);
 
   function enableSound() {
-    if (!audioRef.current || !movementAudioRef.current) return;
+    if (!alarmAudioRef.current || !movementAudioRef.current) return;
 
     Promise.all([
-      audioRef.current.play().then(() => {
-        audioRef.current?.pause();
-        if (audioRef.current) audioRef.current.currentTime = 0;
+      alarmAudioRef.current.play().then(() => {
+        alarmAudioRef.current?.pause();
+        if (alarmAudioRef.current) alarmAudioRef.current.currentTime = 0;
       }),
       movementAudioRef.current.play().then(() => {
         movementAudioRef.current?.pause();
@@ -292,9 +293,9 @@ export default function DispatcherPage() {
   }
 
   function stopAlarmSound() {
-    if (!audioRef.current) return;
-    audioRef.current.pause();
-    audioRef.current.currentTime = 0;
+    if (!alarmAudioRef.current) return;
+    alarmAudioRef.current.pause();
+    alarmAudioRef.current.currentTime = 0;
   }
 
   function playMovementAlertSound() {
@@ -370,22 +371,61 @@ export default function DispatcherPage() {
     );
   }, [userLocations]);
 
+  const enableMovementMonitor = useCallback((user: UserLocation) => {
+    setMovementWatch((prev) => ({
+      ...prev,
+      [user.user_id]: {
+        enabled: true,
+        baselineLat: user.latitude as number,
+        baselineLng: user.longitude as number,
+        baselineTime: new Date().toISOString(),
+        alertActive: false,
+      },
+    }));
+    setStatusMessage(`No movement monitor enabled for ${user.full_name || "user"}`);
+  }, []);
+
+  const disableMovementMonitor = useCallback((userId: string) => {
+    setMovementWatch((prev) => {
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
+    setStatusMessage("No movement monitor disabled");
+  }, []);
+
+  const resetMovementTimer = useCallback((userId: string) => {
+    const trackingRow = liveTrackedUsers.find((u) => u.user_id === userId);
+    if (!trackingRow) return;
+
+    setMovementWatch((prev) => ({
+      ...prev,
+      [userId]: {
+        enabled: true,
+        baselineLat: trackingRow.latitude as number,
+        baselineLng: trackingRow.longitude as number,
+        baselineTime: new Date().toISOString(),
+        alertActive: false,
+      },
+    }));
+
+    setStatusMessage("Movement timer reset");
+  }, [liveTrackedUsers]);
+
   useEffect(() => {
     setMovementWatch((prev) => {
       const next: Record<string, MovementWatchState> = { ...prev };
+      const trackedIds = new Set(liveTrackedUsers.map((u) => u.user_id));
+
+      Object.keys(next).forEach((userId) => {
+        if (!trackedIds.has(userId)) {
+          delete next[userId];
+        }
+      });
 
       for (const user of liveTrackedUsers) {
         const existing = next[user.user_id];
-
-        if (!existing) {
-          next[user.user_id] = {
-            baselineLat: user.latitude as number,
-            baselineLng: user.longitude as number,
-            baselineTime: user.updated_at,
-            alertActive: false,
-          };
-          continue;
-        }
+        if (!existing || !existing.enabled) continue;
 
         const distanceMoved = haversineDistanceMeters(
           existing.baselineLat,
@@ -396,29 +436,25 @@ export default function DispatcherPage() {
 
         if (distanceMoved >= MOVEMENT_THRESHOLD_METERS) {
           next[user.user_id] = {
+            enabled: true,
             baselineLat: user.latitude as number,
             baselineLng: user.longitude as number,
             baselineTime: user.updated_at,
             alertActive: false,
           };
-        } else {
-          const minutesStationary = minutesSince(existing.baselineTime);
+          continue;
+        }
 
-          if (minutesStationary >= 50 && !existing.alertActive) {
-            next[user.user_id] = {
-              ...existing,
-              alertActive: true,
-            };
-          }
+        const stationaryMs =
+          Date.now() - new Date(existing.baselineTime).getTime();
+
+        if (stationaryMs >= NO_MOVEMENT_LIMIT_MS && !existing.alertActive) {
+          next[user.user_id] = {
+            ...existing,
+            alertActive: true,
+          };
         }
       }
-
-      const trackedIds = new Set(liveTrackedUsers.map((u) => u.user_id));
-      Object.keys(next).forEach((userId) => {
-        if (!trackedIds.has(userId)) {
-          delete next[userId];
-        }
-      });
 
       return next;
     });
@@ -438,8 +474,10 @@ export default function DispatcherPage() {
         online,
         tracking,
         trackingRow,
+        movementMonitorEnabled: Boolean(movement?.enabled),
         movementAlertActive: Boolean(movement?.alertActive),
-        stationaryMinutes: movement ? minutesSince(movement.baselineTime) : 0,
+        stationaryMinutes:
+          movement?.enabled ? minutesSince(movement.baselineTime) : 0,
       };
     });
   }, [liveTrackedUsers, movementWatch, presenceUsers]);
@@ -455,23 +493,6 @@ export default function DispatcherPage() {
       stopMovementAlertSound();
     }
   }, [movementAlerts.length, soundEnabled]);
-
-  function resetMovementTimer(userId: string) {
-    const trackingRow = liveTrackedUsers.find((u) => u.user_id === userId);
-    if (!trackingRow) return;
-
-    setMovementWatch((prev) => ({
-      ...prev,
-      [userId]: {
-        baselineLat: trackingRow.latitude as number,
-        baselineLng: trackingRow.longitude as number,
-        baselineTime: new Date().toISOString(),
-        alertActive: false,
-      },
-    }));
-
-    setStatusMessage("Movement timer reset");
-  }
 
   useEffect(() => {
     async function init() {
@@ -538,16 +559,16 @@ export default function DispatcherPage() {
   }, [loadAlarms, loadPresenceUsers, loadUserLocations]);
 
   useEffect(() => {
-    if (!alarms.length || !soundEnabled || !audioRef.current) return;
+    if (!alarms.length || !soundEnabled || !alarmAudioRef.current) return;
 
     const newest = alarms[0];
     const isNewAlarm = newest.id !== lastAlarmId;
     const isActiveAlarm = newest.status === "Active";
 
     if (isNewAlarm && isActiveAlarm) {
-      audioRef.current.loop = true;
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch((err) => {
+      alarmAudioRef.current.loop = true;
+      alarmAudioRef.current.currentTime = 0;
+      alarmAudioRef.current.play().catch((err) => {
         console.error("Alarm play failed:", err);
         setStatusMessage("Alarm received but sound could not play.");
       });
@@ -689,7 +710,7 @@ export default function DispatcherPage() {
             {usersWithStatus.map((user) => (
               <div
                 key={user.user_id}
-                className="flex min-w-[160px] items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/50 px-4 py-3"
+                className="flex min-w-[180px] items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/50 px-4 py-3"
               >
                 <div
                   className={`flex h-12 w-12 items-center justify-center rounded-full text-lg font-bold ${
@@ -720,6 +741,12 @@ export default function DispatcherPage() {
                     {user.tracking && (
                       <span className="rounded bg-blue-900/50 px-2 py-1 text-blue-200">
                         GPS Live
+                      </span>
+                    )}
+
+                    {user.movementMonitorEnabled && (
+                      <span className="rounded bg-cyan-900/50 px-2 py-1 text-cyan-200">
+                        Monitor On
                       </span>
                     )}
 
@@ -759,12 +786,20 @@ export default function DispatcherPage() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => resetMovementTimer(user.user_id)}
-                    className="rounded bg-orange-500 px-4 py-2 font-semibold text-black"
-                  >
-                    Reset timer
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => resetMovementTimer(user.user_id)}
+                      className="rounded bg-orange-500 px-4 py-2 font-semibold text-black"
+                    >
+                      Reset timer
+                    </button>
+                    <button
+                      onClick={() => disableMovementMonitor(user.user_id)}
+                      className="rounded bg-slate-800 px-4 py-2 font-semibold text-white"
+                    >
+                      Disable
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -965,38 +1000,82 @@ export default function DispatcherPage() {
               </div>
 
               <div className="space-y-3">
-                {numberedLiveTrackedUsers.map((user) => (
-                  <div
-                    key={user.user_id}
-                    className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
-                  >
-                    <div className="font-semibold">
-                      #{user.markerNumber} {user.full_name || "Unknown user"}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-300">
-                      {user.role || "User"} · {user.site_name || "Unknown site"}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-400">
-                      {user.latitude?.toFixed(5)}, {user.longitude?.toFixed(5)}
-                    </div>
-                    {user.accuracy !== null && (
-                      <div className="mt-1 text-xs text-slate-500">
-                        Accuracy: {Math.round(user.accuracy)}m
-                      </div>
-                    )}
-                    <div className="mt-1 text-xs text-slate-500">
-                      Updated: {new Date(user.updated_at).toLocaleString()}
-                    </div>
-                    <a
-                      href={`https://www.google.com/maps?q=${user.latitude},${user.longitude}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-3 inline-block text-sm font-semibold underline"
+                {numberedLiveTrackedUsers.map((user) => {
+                  const monitor = movementWatch[user.user_id];
+                  const monitorEnabled = Boolean(monitor?.enabled);
+                  const alertActive = Boolean(monitor?.alertActive);
+
+                  return (
+                    <div
+                      key={user.user_id}
+                      className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
                     >
-                      Open map
-                    </a>
-                  </div>
-                ))}
+                      <div className="font-semibold">
+                        #{user.markerNumber} {user.full_name || "Unknown user"}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-300">
+                        {user.role || "User"} · {user.site_name || "Unknown site"}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-400">
+                        {user.latitude?.toFixed(5)}, {user.longitude?.toFixed(5)}
+                      </div>
+                      {user.accuracy !== null && (
+                        <div className="mt-1 text-xs text-slate-500">
+                          Accuracy: {Math.round(user.accuracy)}m
+                        </div>
+                      )}
+                      <div className="mt-1 text-xs text-slate-500">
+                        Updated: {new Date(user.updated_at).toLocaleString()}
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {monitorEnabled ? (
+                          <>
+                            <span className="rounded bg-cyan-900/50 px-2 py-1 text-xs text-cyan-200">
+                              No movement monitor on
+                            </span>
+
+                            <button
+                              onClick={() => resetMovementTimer(user.user_id)}
+                              className="rounded bg-orange-500 px-3 py-1 text-xs font-semibold text-black"
+                            >
+                              Reset timer
+                            </button>
+
+                            <button
+                              onClick={() => disableMovementMonitor(user.user_id)}
+                              className="rounded bg-slate-800 px-3 py-1 text-xs font-semibold text-white"
+                            >
+                              Disable
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => enableMovementMonitor(user)}
+                            className="rounded bg-cyan-500 px-3 py-1 text-xs font-semibold text-black"
+                          >
+                            Enable no movement alarm
+                          </button>
+                        )}
+
+                        {alertActive && (
+                          <span className="rounded bg-orange-900/50 px-2 py-1 text-xs text-orange-200">
+                            Alert active
+                          </span>
+                        )}
+                      </div>
+
+                      <a
+                        href={`https://www.google.com/maps?q=${user.latitude},${user.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-block text-sm font-semibold underline"
+                      >
+                        Open map
+                      </a>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -1065,7 +1144,7 @@ export default function DispatcherPage() {
           )}
         </div>
 
-        <audio ref={audioRef} src="/alarm.mp3" preload="auto" />
+        <audio ref={alarmAudioRef} src="/alarm.mp3" preload="auto" />
         <audio ref={movementAudioRef} src="/alarm.mp3" preload="auto" />
       </div>
     </main>

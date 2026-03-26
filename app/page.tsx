@@ -52,11 +52,21 @@ export default function HomePage() {
   const trackingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
     null
   );
+  const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null
+  );
 
   const clearTrackingInterval = useCallback(() => {
     if (trackingIntervalRef.current) {
       clearInterval(trackingIntervalRef.current);
       trackingIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearPresenceInterval = useCallback(() => {
+    if (presenceIntervalRef.current) {
+      clearInterval(presenceIntervalRef.current);
+      presenceIntervalRef.current = null;
     }
   }, []);
 
@@ -71,20 +81,18 @@ export default function HomePage() {
       return;
     }
 
-    setAlarms(data || []);
+    setAlarms((data || []) as Alarm[]);
   }, []);
 
-  const ensureUserAndProfile = useCallback(async () => {
+  const getCurrentUserAndProfile = useCallback(async () => {
     const { data, error } = await supabase.auth.getUser();
 
     if (error || !data.user) {
       window.location.href = "/login";
-      return;
+      return null;
     }
 
-    setUserEmail(data.user.email || "");
-
-    const { data: existingProfile, error: profileError } = await supabase
+    const { data: currentProfile, error: profileError } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", data.user.id)
@@ -92,39 +100,72 @@ export default function HomePage() {
 
     if (profileError) {
       setStatusMessage(`Profile error: ${profileError.message}`);
-      return;
+      return null;
     }
 
-    if (!existingProfile) {
-      setNeedsProfile(true);
-      setFullNameInput(data.user.email || "");
-      return;
-    }
-
-    setProfile(existingProfile);
-    setFullNameInput(existingProfile.full_name || "");
-    setRoleInput(existingProfile.role || "User");
-    setSiteInput(existingProfile.site_name || "Test Site");
-    setNeedsProfile(false);
+    return {
+      user: data.user,
+      profile: currentProfile as Profile | null,
+    };
   }, []);
 
-  const loadTrackingState = useCallback(async () => {
-    const { data: userData, error: userError } = await supabase.auth.getUser();
+  const updatePresence = useCallback(async (isLoggedIn: boolean) => {
+    const info = await getCurrentUserAndProfile();
+    if (!info) return;
 
-    if (userError || !userData.user) return;
+    const payload = {
+      user_id: info.user.id,
+      full_name: info.profile?.full_name || info.user.email,
+      role: info.profile?.role || "User",
+      site_name: info.profile?.site_name || "Test Site",
+      is_logged_in: isLoggedIn,
+      last_seen: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from("user_presence")
+      .upsert([payload], { onConflict: "user_id" });
+
+    if (error) {
+      console.error("Presence update error:", error);
+    }
+  }, [getCurrentUserAndProfile]);
+
+  const ensureUserAndProfile = useCallback(async () => {
+    const info = await getCurrentUserAndProfile();
+
+    if (!info) return;
+
+    setUserEmail(info.user.email || "");
+
+    if (!info.profile) {
+      setNeedsProfile(true);
+      setFullNameInput(info.user.email || "");
+      return;
+    }
+
+    setProfile(info.profile);
+    setFullNameInput(info.profile.full_name || "");
+    setRoleInput(info.profile.role || "User");
+    setSiteInput(info.profile.site_name || "Test Site");
+    setNeedsProfile(false);
+  }, [getCurrentUserAndProfile]);
+
+  const loadTrackingState = useCallback(async () => {
+    const info = await getCurrentUserAndProfile();
+    if (!info) return;
 
     const { data, error } = await supabase
       .from("user_locations")
       .select("user_id")
-      .eq("user_id", userData.user.id)
+      .eq("user_id", info.user.id)
       .maybeSingle();
 
-    if (error) {
-      return;
-    }
+    if (error) return;
 
     setTrackingEnabled(Boolean(data));
-  }, []);
+  }, [getCurrentUserAndProfile]);
 
   const saveProfile = useCallback(async () => {
     const { data, error } = await supabase.auth.getUser();
@@ -153,7 +194,8 @@ export default function HomePage() {
     setProfile(payload);
     setNeedsProfile(false);
     setStatusMessage("Profile saved");
-  }, [fullNameInput, roleInput, siteInput]);
+    await updatePresence(true);
+  }, [fullNameInput, roleInput, siteInput, updatePresence]);
 
   const getLocation = useCallback(async (): Promise<LocationResult> => {
     return new Promise((resolve) => {
@@ -184,20 +226,14 @@ export default function HomePage() {
 
   const sendAlarm = useCallback(
     async (type: string) => {
-      const { data: userData } = await supabase.auth.getUser();
+      const info = await getCurrentUserAndProfile();
 
-      if (!userData.user) {
+      if (!info?.user) {
         window.location.href = "/login";
         return;
       }
 
-      const { data: currentProfile, error: profileError } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", userData.user.id)
-        .maybeSingle();
-
-      if (profileError || !currentProfile) {
+      if (!info.profile) {
         setStatusMessage("Please save your profile first.");
         setNeedsProfile(true);
         return;
@@ -211,16 +247,16 @@ export default function HomePage() {
 
       const { error } = await supabase.from("alarms").insert([
         {
-          site_name: currentProfile.site_name || "Test Site",
+          site_name: info.profile.site_name || "Test Site",
           alarm_type: type,
           location: "Reception",
           priority:
             type === "Panic" || type === "Lockdown" ? "Critical" : "High",
           status: "Active",
           message: `${type} alert triggered`,
-          triggered_by_user_id: userData.user.id,
-          triggered_by_name: currentProfile.full_name,
-          triggered_by_role: currentProfile.role,
+          triggered_by_user_id: info.user.id,
+          triggered_by_name: info.profile.full_name,
+          triggered_by_role: info.profile.role,
           latitude: locationData.latitude,
           longitude: locationData.longitude,
           location_accuracy: locationData.accuracy,
@@ -235,21 +271,15 @@ export default function HomePage() {
       setStatusMessage(`${type} alarm sent`);
       await loadAlarms();
     },
-    [getLocation, loadAlarms]
+    [getCurrentUserAndProfile, getLocation, loadAlarms]
   );
 
   const updateLiveLocation = useCallback(async () => {
-    const { data: userData } = await supabase.auth.getUser();
+    const info = await getCurrentUserAndProfile();
 
-    if (!userData.user) {
+    if (!info?.user) {
       return false;
     }
-
-    const { data: currentProfile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userData.user.id)
-      .maybeSingle();
 
     const locationData = await getLocation();
 
@@ -261,10 +291,10 @@ export default function HomePage() {
     const { error } = await supabase.from("user_locations").upsert(
       [
         {
-          user_id: userData.user.id,
-          full_name: currentProfile?.full_name || userData.user.email,
-          role: currentProfile?.role || "User",
-          site_name: currentProfile?.site_name || "Test Site",
+          user_id: info.user.id,
+          full_name: info.profile?.full_name || info.user.email,
+          role: info.profile?.role || "User",
+          site_name: info.profile?.site_name || "Test Site",
           latitude: locationData.latitude,
           longitude: locationData.longitude,
           accuracy: locationData.accuracy,
@@ -281,11 +311,13 @@ export default function HomePage() {
       return false;
     }
 
+    await updatePresence(true);
+
     setStatusMessage(
       `Live tracking updated at ${new Date().toLocaleTimeString()}`
     );
     return true;
-  }, [getLocation]);
+  }, [getCurrentUserAndProfile, getLocation, updatePresence]);
 
   const startTracking = useCallback(async () => {
     if (isStartingTracking) return;
@@ -365,16 +397,36 @@ export default function HomePage() {
   }, [loadAlarms]);
 
   const signOut = useCallback(async () => {
-    await stopTracking();
+    clearTrackingInterval();
+    clearPresenceInterval();
+
+    const { data: userData } = await supabase.auth.getUser();
+
+    if (userData.user) {
+      await supabase
+        .from("user_locations")
+        .delete()
+        .eq("user_id", userData.user.id);
+
+      await supabase
+        .from("user_presence")
+        .update({
+          is_logged_in: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userData.user.id);
+    }
+
     await supabase.auth.signOut();
     window.location.href = "/login";
-  }, [stopTracking]);
+  }, [clearPresenceInterval, clearTrackingInterval]);
 
   useEffect(() => {
     async function init() {
       await ensureUserAndProfile();
       await loadAlarms();
       await loadTrackingState();
+      await updatePresence(true);
     }
 
     init();
@@ -390,11 +442,45 @@ export default function HomePage() {
       )
       .subscribe();
 
+    presenceIntervalRef.current = setInterval(() => {
+      updatePresence(true);
+    }, 60000);
+
     return () => {
       supabase.removeChannel(alarmsChannel);
       clearTrackingInterval();
+      clearPresenceInterval();
     };
-  }, [clearTrackingInterval, ensureUserAndProfile, loadAlarms, loadTrackingState]);
+  }, [
+    clearPresenceInterval,
+    clearTrackingInterval,
+    ensureUserAndProfile,
+    loadAlarms,
+    loadTrackingState,
+    updatePresence,
+  ]);
+
+  useEffect(() => {
+    const handleBeforeUnload = async () => {
+      const { data: userData } = await supabase.auth.getUser();
+
+      if (userData.user) {
+        await supabase
+          .from("user_presence")
+          .update({
+            is_logged_in: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", userData.user.id);
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, []);
 
   return (
     <main className="min-h-screen bg-slate-50 p-10">
@@ -527,7 +613,7 @@ export default function HomePage() {
         </div>
 
         <div className="rounded-3xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-lg font-semibold">Active Alarms</h2>
+          <h2 className="mb-4 text-lg font-semibold">Alarms</h2>
 
           {alarms.length === 0 && (
             <p className="text-sm text-slate-500">No alarms yet</p>

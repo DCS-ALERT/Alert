@@ -22,6 +22,7 @@ type Alarm = {
   status: string;
   message: string | null;
   created_at: string;
+  triggered_by_user_id: string | null;
   triggered_by_name: string | null;
   triggered_by_role: string | null;
   acknowledged: boolean | null;
@@ -170,8 +171,8 @@ export default function DispatcherPage() {
     if (!audioRef.current) return;
 
     audioRef.current.volume = 1;
-    audioRef.current.loop = true;
     audioRef.current.currentTime = 0;
+    audioRef.current.loop = true;
 
     audioRef.current
       .play()
@@ -336,6 +337,13 @@ export default function DispatcherPage() {
     );
   }, [userLocations]);
 
+  const numberedLiveTrackedUsers = useMemo(() => {
+    return liveTrackedUsers.map((user, index) => ({
+      ...user,
+      markerNumber: index + 1,
+    }));
+  }, [liveTrackedUsers]);
+
   const nearestResponder = useMemo(() => {
     if (
       !activeAlarm ||
@@ -345,7 +353,8 @@ export default function DispatcherPage() {
       return null;
     }
 
-    const responders = liveTrackedUsers
+    const responders = numberedLiveTrackedUsers
+      .filter((user) => user.user_id !== activeAlarm.triggered_by_user_id)
       .map((user) => {
         const distance = haversineDistanceMeters(
           activeAlarm.latitude as number,
@@ -362,7 +371,7 @@ export default function DispatcherPage() {
       .sort((a, b) => a.distance - b.distance);
 
     return responders[0] || null;
-  }, [activeAlarm, liveTrackedUsers]);
+  }, [activeAlarm, numberedLiveTrackedUsers]);
 
   const activeAlarmCount = alarms.filter((a) => a.status === "Active").length;
 
@@ -434,7 +443,7 @@ export default function DispatcherPage() {
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">Live tracked users</div>
             <div className="mt-1 text-lg font-semibold">
-              {liveTrackedUsers.length}
+              {numberedLiveTrackedUsers.length}
             </div>
           </div>
         </div>
@@ -512,12 +521,13 @@ export default function DispatcherPage() {
                     </div>
                   )}
 
-                {nearestResponder && (
+                {nearestResponder ? (
                   <div className="mt-4 rounded-2xl bg-black/20 p-4">
                     <p className="text-lg font-semibold">
                       Nearest responder
                     </p>
                     <p className="mt-2">
+                      #{nearestResponder.markerNumber}{" "}
                       {nearestResponder.full_name || "Unknown user"} (
                       {nearestResponder.role || "User"})
                     </p>
@@ -527,6 +537,15 @@ export default function DispatcherPage() {
                     <p className="mt-1 text-sm text-white/80">
                       Last updated:{" "}
                       {new Date(nearestResponder.updated_at).toLocaleTimeString()}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl bg-black/20 p-4">
+                    <p className="text-lg font-semibold">
+                      Nearest responder
+                    </p>
+                    <p className="mt-2 text-white/80">
+                      No other tracked responder currently available
                     </p>
                   </div>
                 )}
@@ -557,13 +576,14 @@ export default function DispatcherPage() {
                     title={`${activeAlarm.alarm_type} alarm`}
                     subtitle={`${activeAlarm.triggered_by_name || "Unknown"} · ${activeAlarm.site_name}`}
                     kind="alarm"
-                    extraMarkers={liveTrackedUsers.map((u) => ({
+                    extraMarkers={numberedLiveTrackedUsers.map((u) => ({
                       id: u.user_id,
                       latitude: u.latitude as number,
                       longitude: u.longitude as number,
-                      title: u.full_name || "User",
+                      title: `#${u.markerNumber} ${u.full_name || "User"}`,
                       subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
                       kind: "user",
+                      label: String(u.markerNumber),
                     }))}
                   />
                 ) : (
@@ -586,40 +606,44 @@ export default function DispatcherPage() {
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-2xl font-semibold">Live User Map</h2>
             <div className="text-sm text-slate-400">
-              {liveTrackedUsers.length} users currently tracked
+              {numberedLiveTrackedUsers.length} users currently tracked
             </div>
           </div>
 
-          {liveTrackedUsers.length > 0 ? (
+          {numberedLiveTrackedUsers.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
               <div className="overflow-hidden rounded-2xl">
                 <AlarmMap
-                  latitude={liveTrackedUsers[0].latitude as number}
-                  longitude={liveTrackedUsers[0].longitude as number}
-                  title={liveTrackedUsers[0].full_name || "Tracked user"}
-                  subtitle={`${liveTrackedUsers[0].role || "User"} · ${
-                    liveTrackedUsers[0].site_name || ""
+                  latitude={numberedLiveTrackedUsers[0].latitude as number}
+                  longitude={numberedLiveTrackedUsers[0].longitude as number}
+                  title={`#${numberedLiveTrackedUsers[0].markerNumber} ${
+                    numberedLiveTrackedUsers[0].full_name || "Tracked user"
+                  }`}
+                  subtitle={`${numberedLiveTrackedUsers[0].role || "User"} · ${
+                    numberedLiveTrackedUsers[0].site_name || ""
                   }`}
                   kind="user"
-                  extraMarkers={liveTrackedUsers.slice(1).map((u) => ({
+                  label={String(numberedLiveTrackedUsers[0].markerNumber)}
+                  extraMarkers={numberedLiveTrackedUsers.slice(1).map((u) => ({
                     id: u.user_id,
                     latitude: u.latitude as number,
                     longitude: u.longitude as number,
-                    title: u.full_name || "Tracked user",
+                    title: `#${u.markerNumber} ${u.full_name || "Tracked user"}`,
                     subtitle: `${u.role || "User"} · ${u.site_name || ""}`,
                     kind: "user",
+                    label: String(u.markerNumber),
                   }))}
                 />
               </div>
 
               <div className="space-y-3">
-                {liveTrackedUsers.map((user) => (
+                {numberedLiveTrackedUsers.map((user) => (
                   <div
                     key={user.user_id}
                     className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
                   >
                     <div className="font-semibold">
-                      {user.full_name || "Unknown user"}
+                      #{user.markerNumber} {user.full_name || "Unknown user"}
                     </div>
                     <div className="mt-1 text-sm text-slate-300">
                       {user.role || "User"} · {user.site_name || "Unknown site"}

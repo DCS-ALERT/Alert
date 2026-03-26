@@ -10,6 +10,7 @@ type ExtraMarker = {
   longitude: number;
   title: string;
   subtitle?: string;
+  kind?: "user" | "alarm" | "acknowledged";
 };
 
 type AlarmMapProps = {
@@ -17,23 +18,49 @@ type AlarmMapProps = {
   longitude: number;
   title?: string;
   subtitle?: string;
+  kind?: "user" | "alarm" | "acknowledged";
   extraMarkers?: ExtraMarker[];
 };
 
-const markerIcon = new L.Icon({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+const redIcon = new L.Icon({
+  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconRetinaUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
   iconSize: [25, 41],
   iconAnchor: [12, 41],
 });
 
+const greenIcon = new L.Icon({
+  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconRetinaUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+
+const yellowIcon = new L.Icon({
+  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-gold.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconRetinaUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+
+function getMarkerIcon(kind: "user" | "alarm" | "acknowledged" = "user") {
+  if (kind === "alarm") return redIcon;
+  if (kind === "acknowledged") return yellowIcon;
+  return greenIcon;
+}
+
 export default function AlarmMap({
   latitude,
   longitude,
-  title = "Alarm location",
+  title = "Location",
   subtitle = "",
+  kind = "alarm",
   extraMarkers = [],
 }: AlarmMapProps) {
   return (
@@ -42,14 +69,17 @@ export default function AlarmMap({
         center={[latitude, longitude]}
         zoom={16}
         scrollWheelZoom={true}
-        style={{ height: "320px", width: "100%" }}
+        style={{ height: "360px", width: "100%" }}
       >
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        <Marker position={[latitude, longitude]} icon={markerIcon}>
+        <Marker
+          position={[latitude, longitude]}
+          icon={getMarkerIcon(kind)}
+        >
           <Popup>
             <strong>{title}</strong>
             <br />
@@ -63,7 +93,7 @@ export default function AlarmMap({
           <Marker
             key={marker.id}
             position={[marker.latitude, marker.longitude]}
-            icon={markerIcon}
+            icon={getMarkerIcon(marker.kind || "user")}
           >
             <Popup>
               <strong>{marker.title}</strong>

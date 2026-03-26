@@ -11,6 +11,7 @@ type ExtraMarker = {
   title: string;
   subtitle?: string;
   kind?: "user" | "alarm" | "acknowledged";
+  label?: string;
 };
 
 type AlarmMapProps = {
@@ -19,11 +20,13 @@ type AlarmMapProps = {
   title?: string;
   subtitle?: string;
   kind?: "user" | "alarm" | "acknowledged";
+  label?: string;
   extraMarkers?: ExtraMarker[];
 };
 
 const redIcon = new L.Icon({
-  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
   iconRetinaUrl:
     "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
@@ -31,17 +34,9 @@ const redIcon = new L.Icon({
   iconAnchor: [12, 41],
 });
 
-const greenIcon = new L.Icon({
-  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconRetinaUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-
 const yellowIcon = new L.Icon({
-  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-gold.png",
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-gold.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
   iconRetinaUrl:
     "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png",
@@ -49,10 +44,41 @@ const yellowIcon = new L.Icon({
   iconAnchor: [12, 41],
 });
 
-function getMarkerIcon(kind: "user" | "alarm" | "acknowledged" = "user") {
+function createNumberedUserIcon(label: string) {
+  return L.divIcon({
+    className: "",
+    html: `
+      <div style="
+        position: relative;
+        width: 28px;
+        height: 28px;
+        border-radius: 9999px;
+        background: #16a34a;
+        border: 3px solid white;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 700;
+        font-size: 12px;
+      ">
+        ${label}
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -14],
+  });
+}
+
+function getMarkerIcon(
+  kind: "user" | "alarm" | "acknowledged" = "user",
+  label?: string
+) {
   if (kind === "alarm") return redIcon;
   if (kind === "acknowledged") return yellowIcon;
-  return greenIcon;
+  return createNumberedUserIcon(label || "?");
 }
 
 export default function AlarmMap({
@@ -61,6 +87,7 @@ export default function AlarmMap({
   title = "Location",
   subtitle = "",
   kind = "alarm",
+  label,
   extraMarkers = [],
 }: AlarmMapProps) {
   return (
@@ -78,7 +105,7 @@ export default function AlarmMap({
 
         <Marker
           position={[latitude, longitude]}
-          icon={getMarkerIcon(kind)}
+          icon={getMarkerIcon(kind, label)}
         >
           <Popup>
             <strong>{title}</strong>
@@ -93,7 +120,7 @@ export default function AlarmMap({
           <Marker
             key={marker.id}
             position={[marker.latitude, marker.longitude]}
-            icon={getMarkerIcon(marker.kind || "user")}
+            icon={getMarkerIcon(marker.kind || "user", marker.label)}
           >
             <Popup>
               <strong>{marker.title}</strong>

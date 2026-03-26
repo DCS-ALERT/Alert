@@ -168,7 +168,9 @@ export default function HomePage() {
     }
 
     setStatusMessage("Getting location...");
+
     const locationData = await getLocation();
+
     setStatusMessage(`Sending ${type} alarm...`);
 
     const { error } = await supabase.from("alarms").insert([
@@ -196,26 +198,24 @@ export default function HomePage() {
     setStatusMessage(`${type} alarm sent`);
   }
 
- async function updateLiveLocation() {
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) return;
+  async function updateLiveLocation() {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) return;
 
-  const { data: currentProfile } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", userData.user.id)
-    .maybeSingle();
+    const { data: currentProfile } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userData.user.id)
+      .maybeSingle();
 
-  const locationData = await getLocation();
+    const locationData = await getLocation();
 
-  if (locationData.latitude === null || locationData.longitude === null) {
-    setStatusMessage("Unable to get live location");
-    return;
-  }
+    if (locationData.latitude === null || locationData.longitude === null) {
+      setStatusMessage("Unable to get live location");
+      return;
+    }
 
-  const { error } = await supabase
-    .from("user_locations")
-    .upsert(
+    const { error } = await supabase.from("user_locations").upsert(
       [
         {
           user_id: userData.user.id,
@@ -233,15 +233,33 @@ export default function HomePage() {
       }
     );
 
-  if (error) {
-    setStatusMessage(`Tracking error: ${error.message}`);
-    return;
+    if (error) {
+      setStatusMessage(`Tracking error: ${error.message}`);
+      return;
+    }
+
+    setStatusMessage(
+      `Live tracking updated at ${new Date().toLocaleTimeString()}`
+    );
   }
 
-  setStatusMessage(
-    `Live tracking updated at ${new Date().toLocaleTimeString()}`
-  );
-}
+  async function startTracking() {
+    if (trackingEnabled) {
+      setStatusMessage("Live tracking already enabled");
+      return;
+    }
+
+    setStatusMessage("Starting live tracking...");
+
+    await updateLiveLocation();
+
+    trackingIntervalRef.current = setInterval(() => {
+      updateLiveLocation();
+    }, 30000);
+
+    setTrackingEnabled(true);
+    setStatusMessage("Live tracking enabled");
+  }
 
   async function stopTracking() {
     if (trackingIntervalRef.current) {
@@ -290,7 +308,7 @@ export default function HomePage() {
 
     init();
 
-    const channel = supabase
+    const alarmsChannel = supabase
       .channel("alarms-channel")
       .on(
         "postgres_changes",
@@ -302,7 +320,8 @@ export default function HomePage() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(alarmsChannel);
+
       if (trackingIntervalRef.current) {
         clearInterval(trackingIntervalRef.current);
       }
@@ -349,6 +368,7 @@ export default function HomePage() {
                 value={fullNameInput}
                 onChange={(e) => setFullNameInput(e.target.value)}
               />
+
               <input
                 type="text"
                 placeholder="Role"
@@ -356,6 +376,7 @@ export default function HomePage() {
                 value={roleInput}
                 onChange={(e) => setRoleInput(e.target.value)}
               />
+
               <input
                 type="text"
                 placeholder="Site name"
@@ -376,6 +397,7 @@ export default function HomePage() {
 
         <div className="rounded-3xl bg-white p-6 shadow">
           <h2 className="mb-4 text-lg font-semibold">Live Tracking</h2>
+
           <div className="flex gap-3">
             <button
               onClick={startTracking}
@@ -383,6 +405,7 @@ export default function HomePage() {
             >
               Start Tracking
             </button>
+
             <button
               onClick={stopTracking}
               className="rounded bg-slate-800 px-4 py-2 text-white"
@@ -390,8 +413,16 @@ export default function HomePage() {
               Stop Tracking
             </button>
           </div>
+
           <p className="mt-3 text-sm text-slate-500">
             Sends your live GPS location every 30 seconds while enabled.
+          </p>
+
+          <p className="mt-2 text-sm text-slate-500">
+            Tracking status:{" "}
+            <span className="font-semibold">
+              {trackingEnabled ? "Enabled" : "Disabled"}
+            </span>
           </p>
         </div>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Alarm = {
@@ -30,6 +30,12 @@ type Profile = {
   site_name: string | null;
 };
 
+type LocationResult = {
+  latitude: number | null;
+  longitude: number | null;
+  accuracy: number | null;
+};
+
 export default function HomePage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [statusMessage, setStatusMessage] = useState("");
@@ -40,10 +46,21 @@ export default function HomePage() {
   const [siteInput, setSiteInput] = useState("Test Site");
   const [needsProfile, setNeedsProfile] = useState(false);
   const [trackingEnabled, setTrackingEnabled] = useState(false);
+  const [isStartingTracking, setIsStartingTracking] = useState(false);
+  const [isStoppingTracking, setIsStoppingTracking] = useState(false);
 
-  const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const trackingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null
+  );
 
-  async function loadAlarms() {
+  const clearTrackingInterval = useCallback(() => {
+    if (trackingIntervalRef.current) {
+      clearInterval(trackingIntervalRef.current);
+      trackingIntervalRef.current = null;
+    }
+  }, []);
+
+  const loadAlarms = useCallback(async () => {
     const { data, error } = await supabase
       .from("alarms")
       .select("*")
@@ -55,9 +72,9 @@ export default function HomePage() {
     }
 
     setAlarms(data || []);
-  }
+  }, []);
 
-  async function ensureUserAndProfile() {
+  const ensureUserAndProfile = useCallback(async () => {
     const { data, error } = await supabase.auth.getUser();
 
     if (error || !data.user) {
@@ -85,10 +102,31 @@ export default function HomePage() {
     }
 
     setProfile(existingProfile);
+    setFullNameInput(existingProfile.full_name || "");
+    setRoleInput(existingProfile.role || "User");
+    setSiteInput(existingProfile.site_name || "Test Site");
     setNeedsProfile(false);
-  }
+  }, []);
 
-  async function saveProfile() {
+  const loadTrackingState = useCallback(async () => {
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+
+    if (userError || !userData.user) return;
+
+    const { data, error } = await supabase
+      .from("user_locations")
+      .select("user_id")
+      .eq("user_id", userData.user.id)
+      .maybeSingle();
+
+    if (error) {
+      return;
+    }
+
+    setTrackingEnabled(Boolean(data));
+  }, []);
+
+  const saveProfile = useCallback(async () => {
     const { data, error } = await supabase.auth.getUser();
 
     if (error || !data.user) {
@@ -98,9 +136,9 @@ export default function HomePage() {
 
     const payload = {
       id: data.user.id,
-      full_name: fullNameInput,
-      role: roleInput,
-      site_name: siteInput,
+      full_name: fullNameInput.trim(),
+      role: roleInput.trim() || "User",
+      site_name: siteInput.trim() || "Test Site",
     };
 
     const { error: upsertError } = await supabase
@@ -115,13 +153,9 @@ export default function HomePage() {
     setProfile(payload);
     setNeedsProfile(false);
     setStatusMessage("Profile saved");
-  }
+  }, [fullNameInput, roleInput, siteInput]);
 
-  async function getLocation(): Promise<{
-    latitude: number | null;
-    longitude: number | null;
-    accuracy: number | null;
-  }> {
+  const getLocation = useCallback(async (): Promise<LocationResult> => {
     return new Promise((resolve) => {
       if (!navigator.geolocation) {
         resolve({ latitude: null, longitude: null, accuracy: null });
@@ -141,66 +175,75 @@ export default function HomePage() {
         },
         {
           enableHighAccuracy: true,
-          timeout: 5000,
+          timeout: 10000,
+          maximumAge: 5000,
         }
       );
     });
-  }
+  }, []);
 
-  async function sendAlarm(type: string) {
+  const sendAlarm = useCallback(
+    async (type: string) => {
+      const { data: userData } = await supabase.auth.getUser();
+
+      if (!userData.user) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const { data: currentProfile, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userData.user.id)
+        .maybeSingle();
+
+      if (profileError || !currentProfile) {
+        setStatusMessage("Please save your profile first.");
+        setNeedsProfile(true);
+        return;
+      }
+
+      setStatusMessage("Getting location...");
+
+      const locationData = await getLocation();
+
+      setStatusMessage(`Sending ${type} alarm...`);
+
+      const { error } = await supabase.from("alarms").insert([
+        {
+          site_name: currentProfile.site_name || "Test Site",
+          alarm_type: type,
+          location: "Reception",
+          priority:
+            type === "Panic" || type === "Lockdown" ? "Critical" : "High",
+          status: "Active",
+          message: `${type} alert triggered`,
+          triggered_by_user_id: userData.user.id,
+          triggered_by_name: currentProfile.full_name,
+          triggered_by_role: currentProfile.role,
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          location_accuracy: locationData.accuracy,
+        },
+      ]);
+
+      if (error) {
+        setStatusMessage(`Insert error: ${error.message}`);
+        return;
+      }
+
+      setStatusMessage(`${type} alarm sent`);
+      await loadAlarms();
+    },
+    [getLocation, loadAlarms]
+  );
+
+  const updateLiveLocation = useCallback(async () => {
     const { data: userData } = await supabase.auth.getUser();
 
     if (!userData.user) {
-      window.location.href = "/login";
-      return;
+      return false;
     }
-
-    const { data: currentProfile, error: profileError } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userData.user.id)
-      .maybeSingle();
-
-    if (profileError || !currentProfile) {
-      setStatusMessage("Please save your profile first.");
-      setNeedsProfile(true);
-      return;
-    }
-
-    setStatusMessage("Getting location...");
-
-    const locationData = await getLocation();
-
-    setStatusMessage(`Sending ${type} alarm...`);
-
-    const { error } = await supabase.from("alarms").insert([
-      {
-        site_name: currentProfile.site_name || "Test Site",
-        alarm_type: type,
-        location: "Reception",
-        priority: type === "Panic" || type === "Lockdown" ? "Critical" : "High",
-        status: "Active",
-        message: `${type} alert triggered`,
-        triggered_by_user_id: userData.user.id,
-        triggered_by_name: currentProfile.full_name,
-        triggered_by_role: currentProfile.role,
-        latitude: locationData.latitude,
-        longitude: locationData.longitude,
-        location_accuracy: locationData.accuracy,
-      },
-    ]);
-
-    if (error) {
-      setStatusMessage(`Insert error: ${error.message}`);
-      return;
-    }
-
-    setStatusMessage(`${type} alarm sent`);
-  }
-
-  async function updateLiveLocation() {
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData.user) return;
 
     const { data: currentProfile } = await supabase
       .from("profiles")
@@ -212,7 +255,7 @@ export default function HomePage() {
 
     if (locationData.latitude === null || locationData.longitude === null) {
       setStatusMessage("Unable to get live location");
-      return;
+      return false;
     }
 
     const { error } = await supabase.from("user_locations").upsert(
@@ -235,52 +278,78 @@ export default function HomePage() {
 
     if (error) {
       setStatusMessage(`Tracking error: ${error.message}`);
-      return;
+      return false;
     }
 
     setStatusMessage(
       `Live tracking updated at ${new Date().toLocaleTimeString()}`
     );
-  }
+    return true;
+  }, [getLocation]);
 
-  async function startTracking() {
-    if (trackingEnabled) {
+  const startTracking = useCallback(async () => {
+    if (isStartingTracking) return;
+
+    if (trackingEnabled && trackingIntervalRef.current) {
       setStatusMessage("Live tracking already enabled");
       return;
     }
 
+    setIsStartingTracking(true);
     setStatusMessage("Starting live tracking...");
 
-    await updateLiveLocation();
+    clearTrackingInterval();
+
+    const firstUpdateWorked = await updateLiveLocation();
+
+    if (!firstUpdateWorked) {
+      setTrackingEnabled(false);
+      setIsStartingTracking(false);
+      return;
+    }
 
     trackingIntervalRef.current = setInterval(() => {
       updateLiveLocation();
     }, 30000);
 
     setTrackingEnabled(true);
+    setIsStartingTracking(false);
     setStatusMessage("Live tracking enabled");
-  }
+  }, [
+    clearTrackingInterval,
+    isStartingTracking,
+    trackingEnabled,
+    updateLiveLocation,
+  ]);
 
-  async function stopTracking() {
-    if (trackingIntervalRef.current) {
-      clearInterval(trackingIntervalRef.current);
-      trackingIntervalRef.current = null;
-    }
+  const stopTracking = useCallback(async () => {
+    if (isStoppingTracking) return;
+
+    setIsStoppingTracking(true);
+
+    clearTrackingInterval();
 
     const { data: userData } = await supabase.auth.getUser();
 
     if (userData.user) {
-      await supabase
+      const { error } = await supabase
         .from("user_locations")
         .delete()
         .eq("user_id", userData.user.id);
+
+      if (error) {
+        setStatusMessage(`Stop tracking error: ${error.message}`);
+        setIsStoppingTracking(false);
+        return;
+      }
     }
 
     setTrackingEnabled(false);
+    setIsStoppingTracking(false);
     setStatusMessage("Live tracking stopped");
-  }
+  }, [clearTrackingInterval, isStoppingTracking]);
 
-  async function clearAlarm(id: string) {
+  const clearAlarm = useCallback(async (id: string) => {
     const { error } = await supabase
       .from("alarms")
       .update({ status: "Cleared" })
@@ -292,18 +361,20 @@ export default function HomePage() {
     }
 
     setStatusMessage("Alarm cleared");
-  }
+    await loadAlarms();
+  }, [loadAlarms]);
 
-  async function signOut() {
+  const signOut = useCallback(async () => {
     await stopTracking();
     await supabase.auth.signOut();
     window.location.href = "/login";
-  }
+  }, [stopTracking]);
 
   useEffect(() => {
     async function init() {
       await ensureUserAndProfile();
       await loadAlarms();
+      await loadTrackingState();
     }
 
     init();
@@ -321,12 +392,9 @@ export default function HomePage() {
 
     return () => {
       supabase.removeChannel(alarmsChannel);
-
-      if (trackingIntervalRef.current) {
-        clearInterval(trackingIntervalRef.current);
-      }
+      clearTrackingInterval();
     };
-  }, []);
+  }, [clearTrackingInterval, ensureUserAndProfile, loadAlarms, loadTrackingState]);
 
   return (
     <main className="min-h-screen bg-slate-50 p-10">
@@ -401,16 +469,18 @@ export default function HomePage() {
           <div className="flex gap-3">
             <button
               onClick={startTracking}
-              className="rounded bg-emerald-600 px-4 py-2 text-white"
+              disabled={trackingEnabled || isStartingTracking}
+              className="rounded bg-emerald-600 px-4 py-2 text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Start Tracking
+              {isStartingTracking ? "Starting..." : "Start Tracking"}
             </button>
 
             <button
               onClick={stopTracking}
-              className="rounded bg-slate-800 px-4 py-2 text-white"
+              disabled={!trackingEnabled || isStoppingTracking}
+              className="rounded bg-slate-800 px-4 py-2 text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Stop Tracking
+              {isStoppingTracking ? "Stopping..." : "Stop Tracking"}
             </button>
           </div>
 
@@ -474,7 +544,8 @@ export default function HomePage() {
                 </p>
                 <p className="text-sm text-slate-500">{alarm.message}</p>
                 <p className="text-sm text-slate-600">
-                  Triggered by: {alarm.triggered_by_name || "Unknown"} ({alarm.triggered_by_role || "Unknown"})
+                  Triggered by: {alarm.triggered_by_name || "Unknown"} (
+                  {alarm.triggered_by_role || "Unknown"})
                 </p>
 
                 {alarm.latitude !== null && alarm.longitude !== null && (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabase";
 
@@ -129,6 +129,37 @@ function haversineDistanceMeters(
   return earthRadius * c;
 }
 
+/**
+ * Keeps only the newest row per user_id.
+ * This fixes the duplicate users issue in the dispatcher even if the table
+ * contains multiple location rows for the same user.
+ */
+function dedupeLatestUserLocations(rows: UserLocation[]) {
+  const latestByUser = new Map<string, UserLocation>();
+
+  for (const row of rows) {
+    const existing = latestByUser.get(row.user_id);
+
+    if (!existing) {
+      latestByUser.set(row.user_id, row);
+      continue;
+    }
+
+    const existingTime = new Date(existing.updated_at).getTime();
+    const rowTime = new Date(row.updated_at).getTime();
+
+    if (rowTime > existingTime) {
+      latestByUser.set(row.user_id, row);
+    }
+  }
+
+  return Array.from(latestByUser.values()).sort((a, b) => {
+    return (
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    );
+  });
+}
+
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
@@ -139,7 +170,7 @@ export default function DispatcherPage() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  async function loadAlarms() {
+  const loadAlarms = useCallback(async () => {
     const { data, error } = await supabase
       .from("alarms")
       .select("*")
@@ -151,9 +182,9 @@ export default function DispatcherPage() {
     }
 
     setAlarms(data || []);
-  }
+  }, []);
 
-  async function loadUserLocations() {
+  const loadUserLocations = useCallback(async () => {
     const { data, error } = await supabase
       .from("user_locations")
       .select("*")
@@ -164,8 +195,9 @@ export default function DispatcherPage() {
       return;
     }
 
-    setUserLocations(data || []);
-  }
+    const cleaned = dedupeLatestUserLocations((data || []) as UserLocation[]);
+    setUserLocations(cleaned);
+  }, []);
 
   function enableSound() {
     if (!audioRef.current) return;
@@ -223,12 +255,15 @@ export default function DispatcherPage() {
 
     stopAlarmSound();
     setStatusMessage(`Acknowledged by ${name}`);
+    await loadAlarms();
   }
 
   async function clearAlarm(id: string) {
     const { error } = await supabase
       .from("alarms")
-      .update({ status: "Cleared" })
+      .update({
+        status: "Cleared",
+      })
       .eq("id", id);
 
     if (error) {
@@ -238,6 +273,7 @@ export default function DispatcherPage() {
 
     stopAlarmSound();
     setStatusMessage("Alarm cleared");
+    await loadAlarms();
   }
 
   useEffect(() => {
@@ -249,16 +285,24 @@ export default function DispatcherPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
-        () => loadAlarms()
+        async () => {
+          await loadAlarms();
+        }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          setStatusMessage("Dispatcher live");
+        }
+      });
 
     const locationsChannel = supabase
       .channel("dispatcher-user-locations")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "user_locations" },
-        () => loadUserLocations()
+        async () => {
+          await loadUserLocations();
+        }
       )
       .subscribe();
 
@@ -266,7 +310,7 @@ export default function DispatcherPage() {
       supabase.removeChannel(alarmsChannel);
       supabase.removeChannel(locationsChannel);
     };
-  }, []);
+  }, [loadAlarms, loadUserLocations]);
 
   useEffect(() => {
     if (!alarms.length || !soundEnabled || !audioRef.current) return;
@@ -289,6 +333,7 @@ export default function DispatcherPage() {
 
   useEffect(() => {
     const active = alarms.find((a) => a.status === "Active");
+
     if (!active) {
       setFlashOn(false);
       return;
@@ -323,11 +368,11 @@ export default function DispatcherPage() {
     : null;
 
   const numberedLiveTrackedUsers = useMemo(() => {
-    const deduped = Array.from(
-      new Map(userLocations.map((u) => [u.user_id, u])).values()
-    ).filter((u) => u.latitude !== null && u.longitude !== null);
+    const validUsers = userLocations.filter(
+      (u) => u.latitude !== null && u.longitude !== null
+    );
 
-    return deduped.map((user, index) => ({
+    return validUsers.map((user, index) => ({
       ...user,
       markerNumber: index + 1,
     }));
@@ -500,7 +545,9 @@ export default function DispatcherPage() {
                     </p>
                     <p className="mt-1 text-sm text-white/80">
                       Last updated:{" "}
-                      {new Date(nearestResponder.updated_at).toLocaleTimeString()}
+                      {new Date(
+                        nearestResponder.updated_at
+                      ).toLocaleTimeString()}
                     </p>
                   </div>
                 ) : (

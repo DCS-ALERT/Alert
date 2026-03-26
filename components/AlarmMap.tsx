@@ -46,10 +46,9 @@ const yellowIcon = new L.Icon({
 
 function createNumberedUserIcon(label: string) {
   return L.divIcon({
-    className: "",
+    className: "custom-numbered-user-marker",
     html: `
       <div style="
-        position: relative;
         width: 28px;
         height: 28px;
         border-radius: 9999px;
@@ -62,8 +61,10 @@ function createNumberedUserIcon(label: string) {
         color: white;
         font-weight: 700;
         font-size: 12px;
+        line-height: 1;
+        text-align: center;
       ">
-        ${label}
+        <span>${label}</span>
       </div>
     `,
     iconSize: [28, 28],
@@ -78,7 +79,7 @@ function getMarkerIcon(
 ) {
   if (kind === "alarm") return redIcon;
   if (kind === "acknowledged") return yellowIcon;
-  return createNumberedUserIcon(label || "?");
+  return createNumberedUserIcon(String(label ?? ""));
 }
 
 export default function AlarmMap({

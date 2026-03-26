@@ -129,11 +129,6 @@ function haversineDistanceMeters(
   return earthRadius * c;
 }
 
-/**
- * Keeps only the newest row per user_id.
- * This fixes the duplicate users issue in the dispatcher even if the table
- * contains multiple location rows for the same user.
- */
 function dedupeLatestUserLocations(rows: UserLocation[]) {
   const latestByUser = new Map<string, UserLocation>();
 
@@ -167,6 +162,8 @@ export default function DispatcherPage() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
   const [flashOn, setFlashOn] = useState(false);
+  const [lastAlarmLoadAt, setLastAlarmLoadAt] = useState<string | null>(null);
+  const [lastLocationLoadAt, setLastLocationLoadAt] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -178,10 +175,12 @@ export default function DispatcherPage() {
 
     if (error) {
       setStatusMessage(`Load alarms error: ${error.message}`);
+      console.error("Load alarms error:", error);
       return;
     }
 
-    setAlarms(data || []);
+    setAlarms((data || []) as Alarm[]);
+    setLastAlarmLoadAt(new Date().toLocaleTimeString());
   }, []);
 
   const loadUserLocations = useCallback(async () => {
@@ -192,11 +191,13 @@ export default function DispatcherPage() {
 
     if (error) {
       setStatusMessage(`Load user locations error: ${error.message}`);
+      console.error("Load user locations error:", error);
       return;
     }
 
     const cleaned = dedupeLatestUserLocations((data || []) as UserLocation[]);
     setUserLocations(cleaned);
+    setLastLocationLoadAt(new Date().toLocaleTimeString());
   }, []);
 
   function enableSound() {
@@ -285,11 +286,13 @@ export default function DispatcherPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
-        async () => {
+        async (payload) => {
+          console.log("alarms realtime payload:", payload);
           await loadAlarms();
         }
       )
       .subscribe((status) => {
+        console.log("alarms channel status:", status);
         if (status === "SUBSCRIBED") {
           setStatusMessage("Dispatcher live");
         }
@@ -300,13 +303,22 @@ export default function DispatcherPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "user_locations" },
-        async () => {
+        async (payload) => {
+          console.log("user_locations realtime payload:", payload);
           await loadUserLocations();
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("locations channel status:", status);
+      });
+
+    const pollInterval = setInterval(() => {
+      loadAlarms();
+      loadUserLocations();
+    }, 10000);
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(alarmsChannel);
       supabase.removeChannel(locationsChannel);
     };
@@ -440,6 +452,17 @@ export default function DispatcherPage() {
 
             <button
               onClick={() => {
+                loadAlarms();
+                loadUserLocations();
+                setStatusMessage("Manual refresh complete");
+              }}
+              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
+            >
+              Refresh
+            </button>
+
+            <button
+              onClick={() => {
                 if (!audioRef.current) return;
                 audioRef.current.loop = false;
                 audioRef.current.currentTime = 0;
@@ -477,15 +500,16 @@ export default function DispatcherPage() {
           <div className="rounded-2xl bg-slate-900 p-4">
             <div className="text-sm text-slate-400">Nearest responder</div>
             <div className="mt-1 text-lg font-semibold">
-              {nearestResponder
-                ? `#${nearestResponder.markerNumber}`
-                : "None"}
+              {nearestResponder ? `#${nearestResponder.markerNumber}` : "None"}
             </div>
           </div>
         </div>
 
         <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
-          {statusMessage}
+          <div>{statusMessage}</div>
+          <div className="mt-2 text-xs text-slate-400">
+            Last alarms load: {lastAlarmLoadAt || "Never"} · Last locations load: {lastLocationLoadAt || "Never"}
+          </div>
         </div>
 
         {activeAlarm && activeTheme ? (
@@ -545,9 +569,7 @@ export default function DispatcherPage() {
                     </p>
                     <p className="mt-1 text-sm text-white/80">
                       Last updated:{" "}
-                      {new Date(
-                        nearestResponder.updated_at
-                      ).toLocaleTimeString()}
+                      {new Date(nearestResponder.updated_at).toLocaleTimeString()}
                     </p>
                   </div>
                 ) : (

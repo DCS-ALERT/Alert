@@ -411,27 +411,45 @@ export default function DispatcherPage() {
     setMovementWatch(map);
   }, []);
 
-  function enableSound() {
-    if (!alarmAudioRef.current || !movementAudioRef.current) return;
+  async function enableSound() {
+    try {
+      if (!alarmAudioRef.current || !movementAudioRef.current) {
+        setStatusMessage("Audio elements not ready yet");
+        return;
+      }
 
-    Promise.all([
-      alarmAudioRef.current.play().then(() => {
-        alarmAudioRef.current?.pause();
-        if (alarmAudioRef.current) alarmAudioRef.current.currentTime = 0;
-      }),
-      movementAudioRef.current.play().then(() => {
-        movementAudioRef.current?.pause();
-        if (movementAudioRef.current) movementAudioRef.current.currentTime = 0;
-      }),
-    ])
-      .then(() => {
-        setSoundEnabled(true);
-        setStatusMessage("Dispatcher sound enabled");
-      })
-      .catch((err) => {
-        console.error("Sound enable failed:", err);
-        setStatusMessage("Browser blocked audio. Tap Enable Sound again.");
-      });
+      const alarmAudio = alarmAudioRef.current;
+      const movementAudio = movementAudioRef.current;
+
+      alarmAudio.volume = 1;
+      movementAudio.volume = 1;
+
+      alarmAudio.loop = false;
+      movementAudio.loop = false;
+
+      alarmAudio.muted = false;
+      movementAudio.muted = false;
+
+      alarmAudio.currentTime = 0;
+      movementAudio.currentTime = 0;
+
+      await alarmAudio.play();
+      alarmAudio.pause();
+      alarmAudio.currentTime = 0;
+
+      await movementAudio.play();
+      movementAudio.pause();
+      movementAudio.currentTime = 0;
+
+      setSoundEnabled(true);
+      setStatusMessage("Dispatcher sound enabled");
+    } catch (err) {
+      console.error("Sound enable failed:", err);
+      setSoundEnabled(false);
+      setStatusMessage(
+        "Browser blocked audio. Click Enable Sound again and keep this tab active."
+      );
+    }
   }
 
   function stopAlarmSound() {
@@ -442,10 +460,16 @@ export default function DispatcherPage() {
 
   function playMovementAlertSound() {
     if (!movementAudioRef.current || !soundEnabled) return;
+
     movementAudioRef.current.loop = true;
     movementAudioRef.current.currentTime = 0;
+    movementAudioRef.current.muted = false;
+
     movementAudioRef.current.play().catch((err) => {
       console.error("Movement alert sound failed:", err);
+      setStatusMessage(
+        "Movement alert triggered but browser blocked audio. Click Enable Sound."
+      );
     });
   }
 
@@ -850,10 +874,17 @@ export default function DispatcherPage() {
     if (isNewAlarm && isActiveAlarm) {
       alarmAudioRef.current.loop = true;
       alarmAudioRef.current.currentTime = 0;
-      alarmAudioRef.current.play().catch((err) => {
-        console.error("Alarm play failed:", err);
-        setStatusMessage("Alarm received but sound could not play.");
-      });
+      alarmAudioRef.current
+        .play()
+        .then(() => {
+          setStatusMessage("Alarm sounding");
+        })
+        .catch((err) => {
+          console.error("Alarm play failed:", err);
+          setStatusMessage(
+            "Alarm received but browser blocked audio. Click Enable Sound."
+          );
+        });
     }
 
     setLastAlarmId(newest.id);
@@ -1435,8 +1466,13 @@ export default function DispatcherPage() {
           )}
         </div>
 
-        <audio ref={alarmAudioRef} src="/alarm.mp3" preload="auto" />
-        <audio ref={movementAudioRef} src="/alarm.mp3" preload="auto" />
+        <audio ref={alarmAudioRef} src="/alarm.mp3" preload="auto" playsInline />
+        <audio
+          ref={movementAudioRef}
+          src="/alarm.mp3"
+          preload="auto"
+          playsInline
+        />
       </div>
     </main>
   );

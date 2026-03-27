@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase";
 const AlarmMap = dynamic(() => import("@/components/AlarmMap"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[360px] items-center justify-center rounded-2xl border border-white/20 bg-black/20 p-6 text-center text-white/80">
+    <div className="flex h-[360px] items-center justify-center rounded-2xl border border-white/15 bg-black/20 p-6 text-center text-white/80">
       Loading map...
     </div>
   ),
@@ -71,6 +71,26 @@ type MovementWatchState = {
   baselineTime: string;
   alertActive: boolean;
 };
+
+type ProfileRole = "user" | "supervisor" | "dispatcher" | "admin" | "unknown";
+
+function normaliseRole(role: string | null | undefined): ProfileRole {
+  const value = (role || "").trim().toLowerCase();
+  if (value === "user") return "user";
+  if (value === "supervisor") return "supervisor";
+  if (value === "dispatcher") return "dispatcher";
+  if (value === "admin") return "admin";
+  return "unknown";
+}
+
+function canAccessDispatcher(role: string | null | undefined) {
+  const normalised = normaliseRole(role);
+  return (
+    normalised === "supervisor" ||
+    normalised === "dispatcher" ||
+    normalised === "admin"
+  );
+}
 
 async function writeAuditLog(params: {
   actionType: string;
@@ -282,7 +302,7 @@ function getIdleBadgeClasses(idleMinutes: number | null) {
   }
 
   if (idleMinutes >= 35) {
-    return "bg-amber-500 text-black border-amber-200";
+    return "bg-amber-400 text-black border-amber-100";
   }
 
   return "bg-emerald-600 text-white border-emerald-200";
@@ -311,6 +331,8 @@ export default function DispatcherPage() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
   const [flashOn, setFlashOn] = useState(false);
+  const [accessChecked, setAccessChecked] = useState(false);
+  const [hasAccess, setHasAccess] = useState(false);
 
   const alarmAudioRef = useRef<HTMLAudioElement | null>(null);
   const movementAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -677,8 +699,10 @@ export default function DispatcherPage() {
       }
     };
 
-    checkNoMovement();
-  }, [liveTrackedUsers, movementWatch]);
+    if (hasAccess) {
+      checkNoMovement();
+    }
+  }, [liveTrackedUsers, movementWatch, hasAccess]);
 
   const usersWithStatus = useMemo(() => {
     return presenceUsers.map((presenceUser) => {
@@ -719,9 +743,25 @@ export default function DispatcherPage() {
       const { data: userData } = await supabase.auth.getUser();
 
       if (!userData.user) {
-        setStatusMessage("Not authenticated - please log in");
+        window.location.href = "/login";
         return;
       }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", userData.user.id)
+        .maybeSingle();
+
+      if (!canAccessDispatcher(profile?.role)) {
+        setAccessChecked(true);
+        setHasAccess(false);
+        setStatusMessage("Access denied");
+        return;
+      }
+
+      setHasAccess(true);
+      setAccessChecked(true);
 
       await loadAlarms();
       await loadUserLocations();
@@ -738,7 +778,7 @@ export default function DispatcherPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
         async () => {
-          await loadAlarms();
+          if (hasAccess) await loadAlarms();
         }
       )
       .subscribe();
@@ -749,7 +789,7 @@ export default function DispatcherPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "user_locations" },
         async () => {
-          await loadUserLocations();
+          if (hasAccess) await loadUserLocations();
         }
       )
       .subscribe();
@@ -760,7 +800,7 @@ export default function DispatcherPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "user_presence" },
         async () => {
-          await loadPresenceUsers();
+          if (hasAccess) await loadPresenceUsers();
         }
       )
       .subscribe();
@@ -771,16 +811,18 @@ export default function DispatcherPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "movement_monitor" },
         async () => {
-          await loadMovementMonitor();
+          if (hasAccess) await loadMovementMonitor();
         }
       )
       .subscribe();
 
     const pollInterval = setInterval(() => {
-      loadAlarms();
-      loadUserLocations();
-      loadPresenceUsers();
-      loadMovementMonitor();
+      if (hasAccess) {
+        loadAlarms();
+        loadUserLocations();
+        loadPresenceUsers();
+        loadMovementMonitor();
+      }
     }, 10000);
 
     return () => {
@@ -790,7 +832,13 @@ export default function DispatcherPage() {
       supabase.removeChannel(presenceChannel);
       supabase.removeChannel(monitorChannel);
     };
-  }, [loadAlarms, loadPresenceUsers, loadUserLocations, loadMovementMonitor]);
+  }, [
+    hasAccess,
+    loadAlarms,
+    loadPresenceUsers,
+    loadUserLocations,
+    loadMovementMonitor,
+  ]);
 
   useEffect(() => {
     if (!alarms.length || !soundEnabled || !alarmAudioRef.current) return;
@@ -885,6 +933,35 @@ export default function DispatcherPage() {
 
   const activeAlarmCount = alarms.filter((a) => a.status === "Active").length;
 
+  if (!accessChecked) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-black text-white">
+        <div className="rounded-3xl border border-white/10 bg-slate-900 px-8 py-6 text-center shadow-xl">
+          <div className="text-lg font-semibold">Checking access…</div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!hasAccess) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-black text-white">
+        <div className="max-w-md rounded-3xl border border-red-500/30 bg-slate-900 px-8 py-6 text-center shadow-xl">
+          <h1 className="text-2xl font-bold text-red-300">Access denied</h1>
+          <p className="mt-3 text-sm text-slate-300">
+            Your role does not have permission to access the dispatcher.
+          </p>
+          <a
+            href="/"
+            className="mt-5 inline-block rounded-xl bg-white px-4 py-2 font-semibold text-black"
+          >
+            Back to dashboard
+          </a>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main
       className={`min-h-screen p-6 text-white transition-colors duration-300 ${
@@ -894,49 +971,53 @@ export default function DispatcherPage() {
       }`}
     >
       <div className="mx-auto max-w-7xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">DCS Dispatcher</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Live emergency control screen
-            </p>
-          </div>
+        <div className="sticky top-0 z-20 mb-6 rounded-3xl border border-white/10 bg-slate-950/90 p-4 shadow-xl backdrop-blur">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">
+                DCS Dispatcher
+              </h1>
+              <p className="mt-1 text-sm text-slate-400">
+                Live emergency control screen
+              </p>
+            </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={enableSound}
-              className={`rounded px-4 py-2 font-semibold ${
-                soundEnabled
-                  ? "bg-emerald-500 text-black"
-                  : "bg-yellow-400 text-black"
-              }`}
-            >
-              {soundEnabled ? "🔊 Sound Enabled" : "🔊 Enable Sound"}
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={enableSound}
+                className={`rounded-xl px-4 py-2 font-semibold transition ${
+                  soundEnabled
+                    ? "bg-emerald-400 text-black"
+                    : "bg-yellow-400 text-black"
+                }`}
+              >
+                {soundEnabled ? "🔊 Sound Enabled" : "🔊 Enable Sound"}
+              </button>
 
-            <button
-              onClick={() => {
-                loadAlarms();
-                loadUserLocations();
-                loadPresenceUsers();
-                loadMovementMonitor();
-                setStatusMessage("Manual refresh complete");
-              }}
-              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
-            >
-              Refresh
-            </button>
+              <button
+                onClick={() => {
+                  loadAlarms();
+                  loadUserLocations();
+                  loadPresenceUsers();
+                  loadMovementMonitor();
+                  setStatusMessage("Manual refresh complete");
+                }}
+                className="rounded-xl bg-slate-700 px-4 py-2 font-semibold text-white transition hover:bg-slate-600"
+              >
+                Refresh
+              </button>
 
-            <a
-              href="/dispatcher/history"
-              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
-            >
-              Alarm History
-            </a>
+              <a
+                href="/dispatcher/history"
+                className="rounded-xl bg-slate-700 px-4 py-2 font-semibold text-white transition hover:bg-slate-600"
+              >
+                Alarm History
+              </a>
+            </div>
           </div>
         </div>
 
-        <div className="mb-6 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+        <div className="mb-6 rounded-3xl border border-white/10 bg-slate-900 p-6 shadow-lg">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-2xl font-semibold">Users Logged Into System</h2>
             <div className="text-sm text-slate-400">
@@ -948,10 +1029,10 @@ export default function DispatcherPage() {
             {usersWithStatus.map((user) => (
               <div
                 key={user.user_id}
-                className="flex min-w-[180px] items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/50 px-4 py-3"
+                className="flex min-w-[210px] items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 px-4 py-3 shadow-sm"
               >
                 <div
-                  className={`flex h-12 w-12 items-center justify-center rounded-full text-lg font-bold ${
+                  className={`flex h-14 w-14 items-center justify-center rounded-full text-xl font-bold shadow-md ${
                     user.online ? "bg-emerald-600" : "bg-red-600"
                   }`}
                 >
@@ -965,9 +1046,9 @@ export default function DispatcherPage() {
                   <div className="truncate text-xs text-slate-400">
                     {user.role || "User"} · {user.site_name || "Unknown site"}
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     <span
-                      className={`rounded px-2 py-1 ${
+                      className={`rounded-full px-2.5 py-1 ${
                         user.online
                           ? "bg-emerald-900/50 text-emerald-200"
                           : "bg-red-900/50 text-red-200"
@@ -977,19 +1058,19 @@ export default function DispatcherPage() {
                     </span>
 
                     {user.tracking && (
-                      <span className="rounded bg-blue-900/50 px-2 py-1 text-blue-200">
+                      <span className="rounded-full bg-blue-900/50 px-2.5 py-1 text-blue-200">
                         GPS Live
                       </span>
                     )}
 
                     {user.movementMonitorEnabled && (
-                      <span className="rounded bg-cyan-900/50 px-2 py-1 text-cyan-200">
+                      <span className="rounded-full bg-cyan-900/50 px-2.5 py-1 text-cyan-200">
                         Monitor On
                       </span>
                     )}
 
                     {user.movementAlertActive && (
-                      <span className="rounded bg-orange-900/50 px-2 py-1 text-orange-200">
+                      <span className="rounded-full bg-orange-900/50 px-2.5 py-1 text-orange-200">
                         No movement
                       </span>
                     )}
@@ -1001,7 +1082,7 @@ export default function DispatcherPage() {
         </div>
 
         {movementAlerts.length > 0 && (
-          <div className="mb-6 rounded-3xl border border-orange-500 bg-orange-950/30 p-6">
+          <div className="mb-6 rounded-3xl border border-orange-500/50 bg-orange-950/30 p-6 shadow-lg">
             <h2 className="mb-4 text-2xl font-semibold text-orange-200">
               No Movement Alerts
             </h2>
@@ -1027,13 +1108,13 @@ export default function DispatcherPage() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => resetMovementTimer(user.user_id)}
-                      className="rounded bg-orange-500 px-4 py-2 font-semibold text-black"
+                      className="rounded-xl bg-orange-400 px-4 py-2 font-semibold text-black"
                     >
                       Reset timer
                     </button>
                     <button
                       onClick={() => disableMovementMonitor(user.user_id)}
-                      className="rounded bg-slate-800 px-4 py-2 font-semibold text-white"
+                      className="rounded-xl bg-slate-800 px-4 py-2 font-semibold text-white"
                     >
                       Disable
                     </button>
@@ -1045,28 +1126,28 @@ export default function DispatcherPage() {
         )}
 
         <div className="mb-6 grid gap-4 md:grid-cols-4">
-          <div className="rounded-2xl bg-slate-900 p-4">
+          <div className="rounded-2xl border border-white/10 bg-slate-900 p-4 shadow-sm">
             <div className="text-sm text-slate-400">System status</div>
             <div className="mt-1 text-lg font-semibold text-emerald-400">
               Live
             </div>
           </div>
 
-          <div className="rounded-2xl bg-slate-900 p-4">
+          <div className="rounded-2xl border border-white/10 bg-slate-900 p-4 shadow-sm">
             <div className="text-sm text-slate-400">Active alarms</div>
             <div className="mt-1 text-lg font-semibold">
               {activeAlarmCount}
             </div>
           </div>
 
-          <div className="rounded-2xl bg-slate-900 p-4">
+          <div className="rounded-2xl border border-white/10 bg-slate-900 p-4 shadow-sm">
             <div className="text-sm text-slate-400">Live tracked users</div>
             <div className="mt-1 text-lg font-semibold">
               {numberedLiveTrackedUsers.length}
             </div>
           </div>
 
-          <div className="rounded-2xl bg-slate-900 p-4">
+          <div className="rounded-2xl border border-white/10 bg-slate-900 p-4 shadow-sm">
             <div className="text-sm text-slate-400">Nearest responder</div>
             <div className="mt-1 text-lg font-semibold">
               {nearestResponder
@@ -1076,7 +1157,7 @@ export default function DispatcherPage() {
           </div>
         </div>
 
-        <div className="mb-6 rounded bg-slate-800 p-3 text-sm">
+        <div className="mb-6 rounded-2xl border border-white/10 bg-slate-900 p-3 text-sm shadow-sm">
           {statusMessage}
         </div>
 
@@ -1084,7 +1165,7 @@ export default function DispatcherPage() {
           <div
             className={`${activeTheme.panel} ${
               flashOn ? "ring-8" : "ring-0"
-            } ${activeTheme.flashClass} mb-8 rounded-3xl p-8 transition-all duration-300`}
+            } ${activeTheme.flashClass} mb-8 rounded-3xl p-8 shadow-2xl transition-all duration-300`}
           >
             <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
               <div className="text-center lg:text-left">
@@ -1154,14 +1235,14 @@ export default function DispatcherPage() {
                 <div className="mt-6 flex flex-wrap justify-center gap-4 lg:justify-start">
                   <button
                     onClick={() => acknowledgeAlarm(activeAlarm.id)}
-                    className="rounded bg-white px-6 py-3 font-bold text-black"
+                    className="rounded-xl bg-white px-6 py-3 font-bold text-black shadow-sm"
                   >
                     Acknowledge
                   </button>
 
                   <button
                     onClick={() => clearAlarm(activeAlarm.id)}
-                    className="rounded bg-black px-6 py-3 font-bold text-white"
+                    className="rounded-xl bg-black px-6 py-3 font-bold text-white shadow-sm"
                   >
                     Clear
                   </button>
@@ -1196,14 +1277,14 @@ export default function DispatcherPage() {
             </div>
           </div>
         ) : (
-          <div className="mb-8 rounded-3xl bg-slate-900 p-10 text-center">
+          <div className="mb-8 rounded-3xl border border-white/10 bg-slate-900 p-10 text-center shadow-lg">
             <h1 className="text-4xl font-bold text-emerald-400">
               No Active Alerts
             </h1>
           </div>
         )}
 
-        <div className="mb-8 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+        <div className="mb-8 rounded-3xl border border-white/10 bg-slate-900 p-6 shadow-lg">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-2xl font-semibold">Live User Map</h2>
             <div className="text-sm text-slate-400">
@@ -1212,7 +1293,7 @@ export default function DispatcherPage() {
           </div>
 
           {numberedLiveTrackedUsers.length > 0 ? (
-            <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+            <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
               <div className="overflow-hidden rounded-2xl">
                 <AlarmMap
                   latitude={numberedLiveTrackedUsers[0].latitude as number}
@@ -1250,10 +1331,10 @@ export default function DispatcherPage() {
                   return (
                     <div
                       key={user.user_id}
-                      className="relative rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
+                      className="relative rounded-2xl border border-slate-700 bg-slate-950/50 p-4 shadow-sm transition hover:border-slate-500"
                     >
                       <div
-                        className={`absolute right-4 top-4 flex h-12 w-12 items-center justify-center rounded-full border-2 text-xs font-bold shadow-md ${getIdleBadgeClasses(
+                        className={`absolute right-4 top-4 flex h-12 w-12 items-center justify-center rounded-full border-2 text-xs font-bold shadow-md transition-colors ${getIdleBadgeClasses(
                           idleMinutes
                         )}`}
                         title={
@@ -1291,11 +1372,11 @@ export default function DispatcherPage() {
 
                       <div className="mt-2 text-xs">
                         {monitorEnabled ? (
-                          <span className="rounded bg-cyan-900/50 px-2 py-1 text-cyan-200">
+                          <span className="rounded-full bg-cyan-900/50 px-2.5 py-1 text-cyan-200">
                             Idle timer running
                           </span>
                         ) : (
-                          <span className="rounded bg-slate-800 px-2 py-1 text-slate-300">
+                          <span className="rounded-full bg-slate-800 px-2.5 py-1 text-slate-300">
                             Idle timer off
                           </span>
                         )}
@@ -1306,14 +1387,14 @@ export default function DispatcherPage() {
                           <>
                             <button
                               onClick={() => resetMovementTimer(user.user_id)}
-                              className="rounded bg-orange-500 px-3 py-1 text-xs font-semibold text-black"
+                              className="rounded-xl bg-orange-400 px-3 py-1 text-xs font-semibold text-black"
                             >
                               Reset timer
                             </button>
 
                             <button
                               onClick={() => disableMovementMonitor(user.user_id)}
-                              className="rounded bg-slate-800 px-3 py-1 text-xs font-semibold text-white"
+                              className="rounded-xl bg-slate-800 px-3 py-1 text-xs font-semibold text-white"
                             >
                               Disable
                             </button>
@@ -1321,14 +1402,14 @@ export default function DispatcherPage() {
                         ) : (
                           <button
                             onClick={() => enableMovementMonitor(user)}
-                            className="rounded bg-cyan-500 px-3 py-1 text-xs font-semibold text-black"
+                            className="rounded-xl bg-cyan-400 px-3 py-1 text-xs font-semibold text-black"
                           >
                             Enable no movement alarm
                           </button>
                         )}
 
                         {alertActive && (
-                          <span className="rounded bg-orange-900/50 px-2 py-1 text-xs text-orange-200">
+                          <span className="rounded-full bg-orange-900/50 px-2.5 py-1 text-xs text-orange-200">
                             Alert active
                           </span>
                         )}

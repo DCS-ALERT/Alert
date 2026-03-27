@@ -54,6 +54,16 @@ type PresenceUser = {
   updated_at: string;
 };
 
+type MovementMonitorRow = {
+  user_id: string;
+  enabled: boolean;
+  baseline_lat: number | null;
+  baseline_lng: number | null;
+  baseline_time: string | null;
+  alert_active: boolean | null;
+  updated_at: string | null;
+};
+
 type MovementWatchState = {
   enabled: boolean;
   baselineLat: number;
@@ -252,13 +262,13 @@ export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
   const [presenceUsers, setPresenceUsers] = useState<PresenceUser[]>([]);
+  const [movementWatch, setMovementWatch] = useState<
+    Record<string, MovementWatchState>
+  >({});
   const [statusMessage, setStatusMessage] = useState("Starting...");
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastAlarmId, setLastAlarmId] = useState<string | null>(null);
   const [flashOn, setFlashOn] = useState(false);
-  const [movementWatch, setMovementWatch] = useState<
-    Record<string, MovementWatchState>
-  >({});
 
   const alarmAudioRef = useRef<HTMLAudioElement | null>(null);
   const movementAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -305,6 +315,36 @@ export default function DispatcherPage() {
 
     const cleaned = dedupeLatestPresence((data || []) as PresenceUser[]);
     setPresenceUsers(cleaned);
+  }, []);
+
+  const loadMovementMonitor = useCallback(async () => {
+    const { data, error } = await supabase.from("movement_monitor").select("*");
+
+    if (error) {
+      setStatusMessage(`Load movement monitor error: ${error.message}`);
+      return;
+    }
+
+    const map: Record<string, MovementWatchState> = {};
+
+    ((data || []) as MovementMonitorRow[]).forEach((row) => {
+      if (
+        row.enabled &&
+        row.baseline_lat !== null &&
+        row.baseline_lng !== null &&
+        row.baseline_time
+      ) {
+        map[row.user_id] = {
+          enabled: row.enabled,
+          baselineLat: Number(row.baseline_lat),
+          baselineLng: Number(row.baseline_lng),
+          baselineTime: row.baseline_time,
+          alertActive: Boolean(row.alert_active),
+        };
+      }
+    });
+
+    setMovementWatch(map);
   }, []);
 
   function enableSound() {
@@ -409,60 +449,86 @@ export default function DispatcherPage() {
     );
   }, [userLocations]);
 
-  const enableMovementMonitor = useCallback((user: UserLocation) => {
-    setMovementWatch((prev) => ({
-      ...prev,
-      [user.user_id]: {
-        enabled: true,
-        baselineLat: user.latitude as number,
-        baselineLng: user.longitude as number,
-        baselineTime: new Date().toISOString(),
-        alertActive: false,
-      },
-    }));
-    setStatusMessage(`No movement monitor enabled for ${user.full_name || "user"}`);
-  }, []);
+  const enableMovementMonitor = useCallback(
+    async (user: UserLocation) => {
+      const { error } = await supabase.from("movement_monitor").upsert([
+        {
+          user_id: user.user_id,
+          enabled: true,
+          baseline_lat: user.latitude,
+          baseline_lng: user.longitude,
+          baseline_time: new Date().toISOString(),
+          alert_active: false,
+          updated_at: new Date().toISOString(),
+        },
+      ]);
 
-  const disableMovementMonitor = useCallback((userId: string) => {
-    setMovementWatch((prev) => {
-      const next = { ...prev };
-      delete next[userId];
-      return next;
-    });
-    setStatusMessage("No movement monitor disabled");
-  }, []);
+      if (error) {
+        setStatusMessage(`Enable monitor error: ${error.message}`);
+        return;
+      }
 
-  const resetMovementTimer = useCallback((userId: string) => {
-    const trackingRow = liveTrackedUsers.find((u) => u.user_id === userId);
-    if (!trackingRow) return;
+      setStatusMessage(
+        `Monitor enabled for ${user.full_name || "Unknown user"}`
+      );
+      await loadMovementMonitor();
+    },
+    [loadMovementMonitor]
+  );
 
-    setMovementWatch((prev) => ({
-      ...prev,
-      [userId]: {
-        enabled: true,
-        baselineLat: trackingRow.latitude as number,
-        baselineLng: trackingRow.longitude as number,
-        baselineTime: new Date().toISOString(),
-        alertActive: false,
-      },
-    }));
+  const resetMovementTimer = useCallback(
+    async (userId: string) => {
+      const trackingRow = liveTrackedUsers.find((u) => u.user_id === userId);
+      if (!trackingRow) return;
 
-    setStatusMessage("Movement timer reset");
-  }, [liveTrackedUsers]);
+      const { error } = await supabase
+        .from("movement_monitor")
+        .update({
+          baseline_lat: trackingRow.latitude,
+          baseline_lng: trackingRow.longitude,
+          baseline_time: new Date().toISOString(),
+          alert_active: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+
+      if (error) {
+        setStatusMessage(`Reset error: ${error.message}`);
+        return;
+      }
+
+      setStatusMessage("Timer reset");
+      await loadMovementMonitor();
+    },
+    [liveTrackedUsers, loadMovementMonitor]
+  );
+
+  const disableMovementMonitor = useCallback(
+    async (userId: string) => {
+      const { error } = await supabase
+        .from("movement_monitor")
+        .update({
+          enabled: false,
+          alert_active: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+
+      if (error) {
+        setStatusMessage(`Disable error: ${error.message}`);
+        return;
+      }
+
+      setStatusMessage("Monitor disabled");
+      await loadMovementMonitor();
+    },
+    [loadMovementMonitor]
+  );
 
   useEffect(() => {
-    setMovementWatch((prev) => {
-      const next: Record<string, MovementWatchState> = { ...prev };
-      const trackedIds = new Set(liveTrackedUsers.map((u) => u.user_id));
-
-      Object.keys(next).forEach((userId) => {
-        if (!trackedIds.has(userId)) {
-          delete next[userId];
-        }
-      });
-
+    const checkNoMovement = async () => {
       for (const user of liveTrackedUsers) {
-        const existing = next[user.user_id];
+        const existing = movementWatch[user.user_id];
         if (!existing || !existing.enabled) continue;
 
         const distanceMoved = haversineDistanceMeters(
@@ -473,13 +539,17 @@ export default function DispatcherPage() {
         );
 
         if (distanceMoved >= MOVEMENT_THRESHOLD_METERS) {
-          next[user.user_id] = {
-            enabled: true,
-            baselineLat: user.latitude as number,
-            baselineLng: user.longitude as number,
-            baselineTime: user.updated_at,
-            alertActive: false,
-          };
+          await supabase
+            .from("movement_monitor")
+            .update({
+              baseline_lat: user.latitude,
+              baseline_lng: user.longitude,
+              baseline_time: user.updated_at,
+              alert_active: false,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("user_id", user.user_id);
+
           continue;
         }
 
@@ -487,16 +557,19 @@ export default function DispatcherPage() {
           Date.now() - new Date(existing.baselineTime).getTime();
 
         if (stationaryMs >= NO_MOVEMENT_LIMIT_MS && !existing.alertActive) {
-          next[user.user_id] = {
-            ...existing,
-            alertActive: true,
-          };
+          await supabase
+            .from("movement_monitor")
+            .update({
+              alert_active: true,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("user_id", user.user_id);
         }
       }
+    };
 
-      return next;
-    });
-  }, [liveTrackedUsers]);
+    checkNoMovement();
+  }, [liveTrackedUsers, movementWatch]);
 
   const usersWithStatus = useMemo(() => {
     return presenceUsers.map((presenceUser) => {
@@ -544,6 +617,7 @@ export default function DispatcherPage() {
       await loadAlarms();
       await loadUserLocations();
       await loadPresenceUsers();
+      await loadMovementMonitor();
       setStatusMessage(`Dispatcher live as ${userData.user.email}`);
     }
 
@@ -582,10 +656,22 @@ export default function DispatcherPage() {
       )
       .subscribe();
 
+    const monitorChannel = supabase
+      .channel("movement-monitor")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "movement_monitor" },
+        async () => {
+          await loadMovementMonitor();
+        }
+      )
+      .subscribe();
+
     const pollInterval = setInterval(() => {
       loadAlarms();
       loadUserLocations();
       loadPresenceUsers();
+      loadMovementMonitor();
     }, 10000);
 
     return () => {
@@ -593,8 +679,9 @@ export default function DispatcherPage() {
       supabase.removeChannel(alarmsChannel);
       supabase.removeChannel(locationsChannel);
       supabase.removeChannel(presenceChannel);
+      supabase.removeChannel(monitorChannel);
     };
-  }, [loadAlarms, loadPresenceUsers, loadUserLocations]);
+  }, [loadAlarms, loadPresenceUsers, loadUserLocations, loadMovementMonitor]);
 
   useEffect(() => {
     if (!alarms.length || !soundEnabled || !alarmAudioRef.current) return;
@@ -727,6 +814,7 @@ export default function DispatcherPage() {
                 loadAlarms();
                 loadUserLocations();
                 loadPresenceUsers();
+                loadMovementMonitor();
                 setStatusMessage("Manual refresh complete");
               }}
               className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"

@@ -334,8 +334,9 @@ export default function DispatcherPage() {
   const [accessChecked, setAccessChecked] = useState(false);
   const [hasAccess, setHasAccess] = useState(false);
 
-  const alarmAudioRef = useRef<HTMLAudioElement | null>(null);
-  const movementAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const movementLoopRef = useRef<number | null>(null);
+  const alarmLoopRef = useRef<number | null>(null);
 
   const loadAlarms = useCallback(async () => {
     const { data, error } = await supabase
@@ -411,35 +412,116 @@ export default function DispatcherPage() {
     setMovementWatch(map);
   }, []);
 
+  const playSingleBeep = useCallback(
+    (
+      frequency = 880,
+      durationMs = 180,
+      volume = 0.06,
+      type: OscillatorType = "sine"
+    ) => {
+      const ctx = audioContextRef.current;
+      if (!ctx) return;
+
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(frequency, ctx.currentTime);
+
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(
+        volume,
+        ctx.currentTime + 0.01
+      );
+      gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        ctx.currentTime + durationMs / 1000
+      );
+
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + durationMs / 1000 + 0.03);
+    },
+    []
+  );
+
+  const stopAlarmSound = useCallback(() => {
+    if (alarmLoopRef.current !== null) {
+      window.clearInterval(alarmLoopRef.current);
+      alarmLoopRef.current = null;
+    }
+  }, []);
+
+  const stopMovementAlertSound = useCallback(() => {
+    if (movementLoopRef.current !== null) {
+      window.clearInterval(movementLoopRef.current);
+      movementLoopRef.current = null;
+    }
+  }, []);
+
+  const playAlarmSound = useCallback(() => {
+    if (!soundEnabled) return;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state !== "running") {
+      setStatusMessage("Alarm received but audio is not unlocked. Click Enable Sound.");
+      return;
+    }
+
+    if (alarmLoopRef.current !== null) return;
+
+    const playPattern = () => {
+      playSingleBeep(920, 180, 0.08, "square");
+      window.setTimeout(() => playSingleBeep(720, 180, 0.08, "square"), 220);
+    };
+
+    playPattern();
+    alarmLoopRef.current = window.setInterval(playPattern, 1100);
+  }, [playSingleBeep, soundEnabled]);
+
+  const playMovementAlertSound = useCallback(() => {
+    if (!soundEnabled) return;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state !== "running") {
+      setStatusMessage(
+        "Movement alert triggered but audio is not unlocked. Click Enable Sound."
+      );
+      return;
+    }
+
+    if (movementLoopRef.current !== null) return;
+
+    const playPattern = () => {
+      playSingleBeep(660, 140, 0.05, "triangle");
+    };
+
+    playPattern();
+    movementLoopRef.current = window.setInterval(playPattern, 1400);
+  }, [playSingleBeep, soundEnabled]);
+
   async function enableSound() {
     try {
-      if (!alarmAudioRef.current || !movementAudioRef.current) {
-        setStatusMessage("Audio elements not ready yet");
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as typeof window & {
+          webkitAudioContext?: typeof AudioContext;
+        }).webkitAudioContext;
+
+      if (!AudioContextClass) {
+        setStatusMessage("This browser does not support Web Audio.");
         return;
       }
 
-      const alarmAudio = alarmAudioRef.current;
-      const movementAudio = movementAudioRef.current;
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContextClass();
+      }
 
-      alarmAudio.volume = 1;
-      movementAudio.volume = 1;
+      if (audioContextRef.current.state !== "running") {
+        await audioContextRef.current.resume();
+      }
 
-      alarmAudio.loop = false;
-      movementAudio.loop = false;
-
-      alarmAudio.muted = false;
-      movementAudio.muted = false;
-
-      alarmAudio.currentTime = 0;
-      movementAudio.currentTime = 0;
-
-      await alarmAudio.play();
-      alarmAudio.pause();
-      alarmAudio.currentTime = 0;
-
-      await movementAudio.play();
-      movementAudio.pause();
-      movementAudio.currentTime = 0;
+      playSingleBeep(880, 120, 0.04, "sine");
 
       setSoundEnabled(true);
       setStatusMessage("Dispatcher sound enabled");
@@ -450,33 +532,6 @@ export default function DispatcherPage() {
         "Browser blocked audio. Click Enable Sound again and keep this tab active."
       );
     }
-  }
-
-  function stopAlarmSound() {
-    if (!alarmAudioRef.current) return;
-    alarmAudioRef.current.pause();
-    alarmAudioRef.current.currentTime = 0;
-  }
-
-  function playMovementAlertSound() {
-    if (!movementAudioRef.current || !soundEnabled) return;
-
-    movementAudioRef.current.loop = true;
-    movementAudioRef.current.currentTime = 0;
-    movementAudioRef.current.muted = false;
-
-    movementAudioRef.current.play().catch((err) => {
-      console.error("Movement alert sound failed:", err);
-      setStatusMessage(
-        "Movement alert triggered but browser blocked audio. Click Enable Sound."
-      );
-    });
-  }
-
-  function stopMovementAlertSound() {
-    if (!movementAudioRef.current) return;
-    movementAudioRef.current.pause();
-    movementAudioRef.current.currentTime = 0;
   }
 
   async function acknowledgeAlarm(id: string) {
@@ -760,7 +815,7 @@ export default function DispatcherPage() {
     } else {
       stopMovementAlertSound();
     }
-  }, [movementAlerts.length, soundEnabled]);
+  }, [movementAlerts.length, playMovementAlertSound, stopMovementAlertSound]);
 
   useEffect(() => {
     async function init() {
@@ -855,6 +910,8 @@ export default function DispatcherPage() {
       supabase.removeChannel(locationsChannel);
       supabase.removeChannel(presenceChannel);
       supabase.removeChannel(monitorChannel);
+      stopAlarmSound();
+      stopMovementAlertSound();
     };
   }, [
     hasAccess,
@@ -862,39 +919,31 @@ export default function DispatcherPage() {
     loadPresenceUsers,
     loadUserLocations,
     loadMovementMonitor,
+    stopAlarmSound,
+    stopMovementAlertSound,
   ]);
 
   useEffect(() => {
-    if (!alarms.length || !soundEnabled || !alarmAudioRef.current) return;
+    if (!alarms.length || !soundEnabled) return;
 
     const newest = alarms[0];
     const isNewAlarm = newest.id !== lastAlarmId;
     const isActiveAlarm = newest.status === "Active";
 
     if (isNewAlarm && isActiveAlarm) {
-      alarmAudioRef.current.loop = true;
-      alarmAudioRef.current.currentTime = 0;
-      alarmAudioRef.current
-        .play()
-        .then(() => {
-          setStatusMessage("Alarm sounding");
-        })
-        .catch((err) => {
-          console.error("Alarm play failed:", err);
-          setStatusMessage(
-            "Alarm received but browser blocked audio. Click Enable Sound."
-          );
-        });
+      playAlarmSound();
+      setStatusMessage("Alarm sounding");
     }
 
     setLastAlarmId(newest.id);
-  }, [alarms, soundEnabled, lastAlarmId]);
+  }, [alarms, soundEnabled, lastAlarmId, playAlarmSound]);
 
   useEffect(() => {
     const active = alarms.find((a) => a.status === "Active");
 
     if (!active) {
       setFlashOn(false);
+      stopAlarmSound();
       return;
     }
 
@@ -903,7 +952,7 @@ export default function DispatcherPage() {
     }, 700);
 
     return () => clearInterval(interval);
-  }, [alarms]);
+  }, [alarms, stopAlarmSound]);
 
   const activeAlarm = useMemo(() => {
     const active = alarms.filter((a) => a.status === "Active");
@@ -1465,14 +1514,6 @@ export default function DispatcherPage() {
             </div>
           )}
         </div>
-
-        <audio ref={alarmAudioRef} src="/alarm.mp3" preload="auto" playsInline />
-        <audio
-          ref={movementAudioRef}
-          src="/alarm.mp3"
-          preload="auto"
-          playsInline
-        />
       </div>
     </main>
   );

@@ -72,6 +72,48 @@ type MovementWatchState = {
   alertActive: boolean;
 };
 
+async function writeAuditLog(params: {
+  actionType: string;
+  targetType: string;
+  targetId?: string | null;
+  targetName?: string | null;
+  siteName?: string | null;
+  details?: Record<string, unknown>;
+}) {
+  const { data: userData } = await supabase.auth.getUser();
+
+  let performedByName = "Dispatcher";
+  let performedByUserId: string | null = userData.user?.id || null;
+
+  if (userData.user?.id) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("id", userData.user.id)
+      .maybeSingle();
+
+    performedByName =
+      profile?.full_name || userData.user.email || "Dispatcher";
+  }
+
+  const { error } = await supabase.from("audit_log").insert([
+    {
+      action_type: params.actionType,
+      target_type: params.targetType,
+      target_id: params.targetId || null,
+      target_name: params.targetName || null,
+      performed_by_user_id: performedByUserId,
+      performed_by_name: performedByName,
+      site_name: params.siteName || null,
+      details: params.details || {},
+    },
+  ]);
+
+  if (error) {
+    console.error("Audit log write failed:", error);
+  }
+}
+
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
 const STALE_TRACKING_MS = 2 * 60 * 1000;
 const NO_MOVEMENT_LIMIT_MS = 50 * 60 * 1000;
@@ -417,6 +459,19 @@ export default function DispatcherPage() {
       return;
     }
 
+    const alarmRow = alarms.find((a) => a.id === id);
+
+    await writeAuditLog({
+      actionType: "acknowledge_alarm",
+      targetType: "alarm",
+      targetId: id,
+      targetName: alarmRow?.alarm_type || "Alarm",
+      siteName: alarmRow?.site_name || null,
+      details: {
+        status: "Acknowledged",
+      },
+    });
+
     stopAlarmSound();
     setStatusMessage(`Acknowledged by ${name}`);
     await loadAlarms();
@@ -434,6 +489,19 @@ export default function DispatcherPage() {
       setStatusMessage(`Clear error: ${error.message}`);
       return;
     }
+
+    const alarmRow = alarms.find((a) => a.id === id);
+
+    await writeAuditLog({
+      actionType: "clear_alarm",
+      targetType: "alarm",
+      targetId: id,
+      targetName: alarmRow?.alarm_type || "Alarm",
+      siteName: alarmRow?.site_name || null,
+      details: {
+        status: "Cleared",
+      },
+    });
 
     stopAlarmSound();
     setStatusMessage("Alarm cleared");
@@ -468,6 +536,19 @@ export default function DispatcherPage() {
         return;
       }
 
+      await writeAuditLog({
+        actionType: "enable_movement_monitor",
+        targetType: "user",
+        targetId: user.user_id,
+        targetName: user.full_name || "Unknown user",
+        siteName: user.site_name || null,
+        details: {
+          latitude: user.latitude,
+          longitude: user.longitude,
+          baselineTime: new Date().toISOString(),
+        },
+      });
+
       setStatusMessage(
         `Monitor enabled for ${user.full_name || "Unknown user"}`
       );
@@ -497,6 +578,19 @@ export default function DispatcherPage() {
         return;
       }
 
+      await writeAuditLog({
+        actionType: "reset_movement_monitor",
+        targetType: "user",
+        targetId: userId,
+        targetName: trackingRow?.full_name || "Unknown user",
+        siteName: trackingRow?.site_name || null,
+        details: {
+          latitude: trackingRow?.latitude || null,
+          longitude: trackingRow?.longitude || null,
+          baselineTime: new Date().toISOString(),
+        },
+      });
+
       setStatusMessage("Timer reset");
       await loadMovementMonitor();
     },
@@ -519,10 +613,25 @@ export default function DispatcherPage() {
         return;
       }
 
+      const trackedUser = liveTrackedUsers.find((u) => u.user_id === userId);
+      const presenceUser = presenceUsers.find((u) => u.user_id === userId);
+
+      await writeAuditLog({
+        actionType: "disable_movement_monitor",
+        targetType: "user",
+        targetId: userId,
+        targetName:
+          trackedUser?.full_name || presenceUser?.full_name || "Unknown user",
+        siteName: trackedUser?.site_name || presenceUser?.site_name || null,
+        details: {
+          disabledAt: new Date().toISOString(),
+        },
+      });
+
       setStatusMessage("Monitor disabled");
       await loadMovementMonitor();
     },
-    [loadMovementMonitor]
+    [liveTrackedUsers, presenceUsers, loadMovementMonitor]
   );
 
   useEffect(() => {
@@ -734,10 +843,6 @@ export default function DispatcherPage() {
     })[0];
   }, [alarms]);
 
-  const historicalAlarms = useMemo(() => {
-    return alarms.filter((a) => a.status !== "Active");
-  }, [alarms]);
-
   const activeTheme = activeAlarm
     ? getAlarmTheme(activeAlarm.alarm_type)
     : null;
@@ -821,6 +926,13 @@ export default function DispatcherPage() {
             >
               Refresh
             </button>
+
+            <a
+              href="/dispatcher/history"
+              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
+            >
+              Alarm History
+            </a>
           </div>
         </div>
 
@@ -1238,65 +1350,6 @@ export default function DispatcherPage() {
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
               No live tracked users yet
-            </div>
-          )}
-        </div>
-
-        <div className="mb-8 rounded-3xl border border-slate-800 bg-slate-900 p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-2xl font-semibold">Historical Alarms</h2>
-            <div className="text-sm text-slate-400">
-              {historicalAlarms.length} historical alarms
-            </div>
-          </div>
-
-          {historicalAlarms.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
-              No historical alarms yet
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {historicalAlarms.map((alarm) => (
-                <div
-                  key={alarm.id}
-                  className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
-                >
-                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <div className="font-semibold">
-                        {alarm.alarm_type} · {alarm.site_name}
-                      </div>
-                      <div className="mt-1 text-sm text-slate-300">
-                        {alarm.message || "No message"}
-                      </div>
-                      <div className="mt-1 text-sm text-slate-400">
-                        Triggered by: {alarm.triggered_by_name || "Unknown"} (
-                        {alarm.triggered_by_role || "Unknown"})
-                      </div>
-                      <div className="mt-1 text-sm text-slate-400">
-                        Location: {alarm.location || "Unknown"}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        Created: {new Date(alarm.created_at).toLocaleString()}
-                      </div>
-                    </div>
-
-                    <div className="text-right text-xs text-slate-300">
-                      <div>Status: {alarm.status}</div>
-                      {alarm.acknowledged && (
-                        <div className="mt-1">
-                          Acknowledged by {alarm.acknowledged_by || "Unknown"}
-                        </div>
-                      )}
-                      {alarm.acknowledged_at && (
-                        <div className="mt-1 text-slate-500">
-                          {new Date(alarm.acknowledged_at).toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
             </div>
           )}
         </div>

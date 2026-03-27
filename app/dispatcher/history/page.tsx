@@ -36,11 +36,33 @@ type AuditLog = {
   created_at: string;
 };
 
+type ProfileRole = "user" | "supervisor" | "dispatcher" | "admin" | "unknown";
+
+function normaliseRole(role: string | null | undefined): ProfileRole {
+  const value = (role || "").trim().toLowerCase();
+  if (value === "user") return "user";
+  if (value === "supervisor") return "supervisor";
+  if (value === "dispatcher") return "dispatcher";
+  if (value === "admin") return "admin";
+  return "unknown";
+}
+
+function canAccessDispatcher(role: string | null | undefined) {
+  const normalised = normaliseRole(role);
+  return (
+    normalised === "supervisor" ||
+    normalised === "dispatcher" ||
+    normalised === "admin"
+  );
+}
+
 export default function DispatcherHistoryPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [statusMessage, setStatusMessage] = useState("Loading...");
   const [alarmFilter, setAlarmFilter] = useState("all");
+  const [accessChecked, setAccessChecked] = useState(false);
+  const [hasAccess, setHasAccess] = useState(false);
 
   const loadAlarms = useCallback(async () => {
     const { data, error } = await supabase
@@ -76,9 +98,25 @@ export default function DispatcherHistoryPage() {
       const { data: userData } = await supabase.auth.getUser();
 
       if (!userData.user) {
-        setStatusMessage("Not authenticated - please log in");
+        window.location.href = "/login";
         return;
       }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", userData.user.id)
+        .maybeSingle();
+
+      if (!canAccessDispatcher(profile?.role)) {
+        setAccessChecked(true);
+        setHasAccess(false);
+        setStatusMessage("Access denied");
+        return;
+      }
+
+      setHasAccess(true);
+      setAccessChecked(true);
 
       await loadAlarms();
       await loadAuditLogs();
@@ -93,7 +131,7 @@ export default function DispatcherHistoryPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "alarms" },
         async () => {
-          await loadAlarms();
+          if (hasAccess) await loadAlarms();
         }
       )
       .subscribe();
@@ -104,7 +142,7 @@ export default function DispatcherHistoryPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "audit_log" },
         async () => {
-          await loadAuditLogs();
+          if (hasAccess) await loadAuditLogs();
         }
       )
       .subscribe();
@@ -113,7 +151,7 @@ export default function DispatcherHistoryPage() {
       supabase.removeChannel(alarmsChannel);
       supabase.removeChannel(auditChannel);
     };
-  }, [loadAlarms, loadAuditLogs]);
+  }, [hasAccess, loadAlarms, loadAuditLogs]);
 
   const filteredAlarms = useMemo(() => {
     if (alarmFilter === "all") return alarms;
@@ -122,48 +160,83 @@ export default function DispatcherHistoryPage() {
     );
   }, [alarmFilter, alarms]);
 
+  if (!accessChecked) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-black text-white">
+        <div className="rounded-3xl border border-white/10 bg-slate-900 px-8 py-6 text-center shadow-xl">
+          <div className="text-lg font-semibold">Checking access…</div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!hasAccess) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-black text-white">
+        <div className="max-w-md rounded-3xl border border-red-500/30 bg-slate-900 px-8 py-6 text-center shadow-xl">
+          <h1 className="text-2xl font-bold text-red-300">Access denied</h1>
+          <p className="mt-3 text-sm text-slate-300">
+            Your role does not have permission to access dispatcher history.
+          </p>
+          <a
+            href="/"
+            className="mt-5 inline-block rounded-xl bg-white px-4 py-2 font-semibold text-black"
+          >
+            Back to dashboard
+          </a>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-black p-6 text-white">
       <div className="mx-auto max-w-7xl space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">Dispatcher Alarm History</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Alarm records and dispatcher audit log
-            </p>
-          </div>
+        <div className="sticky top-0 z-20 rounded-3xl border border-white/10 bg-slate-950/90 p-4 shadow-xl backdrop-blur">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">
+                Dispatcher Alarm History
+              </h1>
+              <p className="mt-1 text-sm text-slate-400">
+                Alarm records and dispatcher audit log
+              </p>
+            </div>
 
-          <div className="flex gap-3">
-            <a
-              href="/dispatcher"
-              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
-            >
-              Back to Dispatcher
-            </a>
+            <div className="flex flex-wrap gap-3">
+              <a
+                href="/dispatcher"
+                className="rounded-xl bg-slate-700 px-4 py-2 font-semibold text-white transition hover:bg-slate-600"
+              >
+                Back to Dispatcher
+              </a>
 
-            <button
-              onClick={() => {
-                loadAlarms();
-                loadAuditLogs();
-                setStatusMessage("History refreshed");
-              }}
-              className="rounded bg-slate-700 px-4 py-2 font-semibold text-white"
-            >
-              Refresh
-            </button>
+              <button
+                onClick={() => {
+                  loadAlarms();
+                  loadAuditLogs();
+                  setStatusMessage("History refreshed");
+                }}
+                className="rounded-xl bg-slate-700 px-4 py-2 font-semibold text-white transition hover:bg-slate-600"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="rounded bg-slate-800 p-3 text-sm">{statusMessage}</div>
+        <div className="rounded-2xl border border-white/10 bg-slate-900 p-3 text-sm shadow-sm">
+          {statusMessage}
+        </div>
 
-        <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-          <div className="mb-4 flex items-center justify-between">
+        <div className="rounded-3xl border border-white/10 bg-slate-900 p-6 shadow-lg">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <h2 className="text-2xl font-semibold">Alarm History</h2>
 
             <select
               value={alarmFilter}
               onChange={(e) => setAlarmFilter(e.target.value)}
-              className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+              className="rounded-xl bg-slate-800 px-3 py-2 text-sm text-white outline-none"
             >
               <option value="all">All alarms</option>
               <option value="panic">Panic</option>
@@ -230,7 +303,7 @@ export default function DispatcherHistoryPage() {
           )}
         </div>
 
-        <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
+        <div className="rounded-3xl border border-white/10 bg-slate-900 p-6 shadow-lg">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-2xl font-semibold">Audit Log</h2>
             <div className="text-sm text-slate-400">
@@ -249,7 +322,7 @@ export default function DispatcherHistoryPage() {
                   key={log.id}
                   className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
                 >
-                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
                       <div className="font-semibold">
                         {log.action_type.replaceAll("_", " ")}
@@ -272,7 +345,7 @@ export default function DispatcherHistoryPage() {
                     </div>
 
                     <div className="max-w-md text-xs text-slate-400">
-                      <pre className="overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3">
+                      <pre className="overflow-auto whitespace-pre-wrap rounded-2xl bg-black/30 p-3">
                         {JSON.stringify(log.details || {}, null, 2)}
                       </pre>
                     </div>

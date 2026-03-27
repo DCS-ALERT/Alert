@@ -210,6 +210,44 @@ function minutesSince(timestamp: string) {
   return Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000);
 }
 
+function getIdleMinutesForUser(
+  userId: string,
+  movementWatch: Record<string, MovementWatchState>
+) {
+  const watch = movementWatch[userId];
+  if (!watch?.enabled) return null;
+
+  return Math.max(0, minutesSince(watch.baselineTime));
+}
+
+function getIdleBadgeClasses(idleMinutes: number | null) {
+  if (idleMinutes === null) {
+    return "bg-slate-700 text-slate-200 border-slate-500";
+  }
+
+  if (idleMinutes >= 50) {
+    return "bg-red-600 text-white border-red-300";
+  }
+
+  if (idleMinutes >= 35) {
+    return "bg-amber-500 text-black border-amber-200";
+  }
+
+  return "bg-emerald-600 text-white border-emerald-200";
+}
+
+function formatIdleBadge(idleMinutes: number | null) {
+  if (idleMinutes === null) return "--";
+
+  if (idleMinutes < 60) {
+    return `${idleMinutes}m`;
+  }
+
+  const hours = Math.floor(idleMinutes / 60);
+  const minutes = idleMinutes % 60;
+  return `${hours}h${minutes}m`;
+}
+
 export default function DispatcherPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
@@ -1004,37 +1042,68 @@ export default function DispatcherPage() {
                   const monitor = movementWatch[user.user_id];
                   const monitorEnabled = Boolean(monitor?.enabled);
                   const alertActive = Boolean(monitor?.alertActive);
+                  const idleMinutes = getIdleMinutesForUser(
+                    user.user_id,
+                    movementWatch
+                  );
 
                   return (
                     <div
                       key={user.user_id}
-                      className="rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
+                      className="relative rounded-2xl border border-slate-700 bg-slate-950/40 p-4"
                     >
-                      <div className="font-semibold">
+                      <div
+                        className={`absolute right-4 top-4 flex h-12 w-12 items-center justify-center rounded-full border-2 text-xs font-bold shadow-md ${getIdleBadgeClasses(
+                          idleMinutes
+                        )}`}
+                        title={
+                          monitorEnabled && idleMinutes !== null
+                            ? `Idle for ${idleMinutes} minute${
+                                idleMinutes === 1 ? "" : "s"
+                              }`
+                            : "No movement monitor disabled"
+                        }
+                      >
+                        {formatIdleBadge(idleMinutes)}
+                      </div>
+
+                      <div className="pr-16 font-semibold">
                         #{user.markerNumber} {user.full_name || "Unknown user"}
                       </div>
+
                       <div className="mt-1 text-sm text-slate-300">
                         {user.role || "User"} · {user.site_name || "Unknown site"}
                       </div>
+
                       <div className="mt-1 text-sm text-slate-400">
                         {user.latitude?.toFixed(5)}, {user.longitude?.toFixed(5)}
                       </div>
+
                       {user.accuracy !== null && (
                         <div className="mt-1 text-xs text-slate-500">
                           Accuracy: {Math.round(user.accuracy)}m
                         </div>
                       )}
+
                       <div className="mt-1 text-xs text-slate-500">
                         Updated: {new Date(user.updated_at).toLocaleString()}
+                      </div>
+
+                      <div className="mt-2 text-xs">
+                        {monitorEnabled ? (
+                          <span className="rounded bg-cyan-900/50 px-2 py-1 text-cyan-200">
+                            Idle timer running
+                          </span>
+                        ) : (
+                          <span className="rounded bg-slate-800 px-2 py-1 text-slate-300">
+                            Idle timer off
+                          </span>
+                        )}
                       </div>
 
                       <div className="mt-3 flex flex-wrap gap-2">
                         {monitorEnabled ? (
                           <>
-                            <span className="rounded bg-cyan-900/50 px-2 py-1 text-xs text-cyan-200">
-                              No movement monitor on
-                            </span>
-
                             <button
                               onClick={() => resetMovementTimer(user.user_id)}
                               className="rounded bg-orange-500 px-3 py-1 text-xs font-semibold text-black"

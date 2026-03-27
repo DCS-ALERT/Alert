@@ -109,28 +109,31 @@ export default function HomePage() {
     };
   }, []);
 
-  const updatePresence = useCallback(async (isLoggedIn: boolean) => {
-    const info = await getCurrentUserAndProfile();
-    if (!info) return;
+  const updatePresence = useCallback(
+    async (isLoggedIn: boolean) => {
+      const info = await getCurrentUserAndProfile();
+      if (!info) return;
 
-    const payload = {
-      user_id: info.user.id,
-      full_name: info.profile?.full_name || info.user.email,
-      role: info.profile?.role || "User",
-      site_name: info.profile?.site_name || "Test Site",
-      is_logged_in: isLoggedIn,
-      last_seen: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+      const payload = {
+        user_id: info.user.id,
+        full_name: info.profile?.full_name || info.user.email,
+        role: info.profile?.role || "User",
+        site_name: info.profile?.site_name || "Test Site",
+        is_logged_in: isLoggedIn,
+        last_seen: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
 
-    const { error } = await supabase
-      .from("user_presence")
-      .upsert([payload], { onConflict: "user_id" });
+      const { error } = await supabase
+        .from("user_presence")
+        .upsert([payload], { onConflict: "user_id" });
 
-    if (error) {
-      console.error("Presence update error:", error);
-    }
-  }, [getCurrentUserAndProfile]);
+      if (error) {
+        console.error("Presence update error:", error);
+      }
+    },
+    [getCurrentUserAndProfile]
+  );
 
   const ensureUserAndProfile = useCallback(async () => {
     const info = await getCurrentUserAndProfile();
@@ -381,21 +384,6 @@ export default function HomePage() {
     setStatusMessage("Live tracking stopped");
   }, [clearTrackingInterval, isStoppingTracking]);
 
-  const clearAlarm = useCallback(async (id: string) => {
-    const { error } = await supabase
-      .from("alarms")
-      .update({ status: "Cleared" })
-      .eq("id", id);
-
-    if (error) {
-      setStatusMessage(`Clear error: ${error.message}`);
-      return;
-    }
-
-    setStatusMessage("Alarm cleared");
-    await loadAlarms();
-  }, [loadAlarms]);
-
   const signOut = useCallback(async () => {
     clearTrackingInterval();
     clearPresenceInterval();
@@ -481,6 +469,8 @@ export default function HomePage() {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, []);
+
+  const activeAlarms = alarms.filter((alarm) => alarm.status === "Active");
 
   return (
     <main className="min-h-screen bg-slate-50 p-10">
@@ -613,18 +603,16 @@ export default function HomePage() {
         </div>
 
         <div className="rounded-3xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-lg font-semibold">Alarms</h2>
+          <h2 className="mb-4 text-lg font-semibold">Current Active Alarms</h2>
 
-          {alarms.length === 0 && (
-            <p className="text-sm text-slate-500">No alarms yet</p>
-          )}
-
-          {alarms.map((alarm) => (
-            <div
-              key={alarm.id}
-              className="mb-3 flex items-center justify-between rounded-xl border p-4"
-            >
-              <div>
+          {activeAlarms.length === 0 ? (
+            <p className="text-sm text-slate-500">No active alarms</p>
+          ) : (
+            activeAlarms.map((alarm) => (
+              <div
+                key={alarm.id}
+                className="mb-3 rounded-xl border p-4 last:mb-0"
+              >
                 <p className="font-semibold">
                   {alarm.alarm_type} – {alarm.location}
                 </p>
@@ -633,32 +621,12 @@ export default function HomePage() {
                   Triggered by: {alarm.triggered_by_name || "Unknown"} (
                   {alarm.triggered_by_role || "Unknown"})
                 </p>
-
-                {alarm.latitude !== null && alarm.longitude !== null && (
-                  <p className="text-sm text-slate-400">
-                    GPS: {alarm.latitude.toFixed(5)}, {alarm.longitude.toFixed(5)}
-                  </p>
-                )}
-
                 <p className="text-xs text-slate-400">
                   {new Date(alarm.created_at).toLocaleString()}
                 </p>
               </div>
-
-              <div className="flex items-center gap-3">
-                <span className="text-xs">{alarm.status}</span>
-
-                {alarm.status !== "Cleared" && (
-                  <button
-                    onClick={() => clearAlarm(alarm.id)}
-                    className="rounded bg-slate-900 px-3 py-1 text-white"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
     </main>
